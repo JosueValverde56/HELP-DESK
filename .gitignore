@@ -1,0 +1,13 @@
+# Dependencias
+node_modules/
+
+# Variables de entorno (¡NUNCA SUBIR EL .env!)
+.env
+
+# Archivos de compilación de TypeScript
+dist/
+build/
+
+# Logs y bases de datos locales
+*.log
+oracle_data_dev/

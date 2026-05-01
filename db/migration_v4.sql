@@ -1,0 +1,20 @@
+-- =====================================================
+-- MIGRACIÓN V4: Campos de notificación en HD_USUARIOS
+-- =====================================================
+
+ALTER SESSION SET "_ORACLE_SCRIPT"=true;
+
+-- 1. Teléfono (con código de país, ej: +593999123456)
+ALTER TABLE HELPDESK.HD_USUARIOS ADD TELEFONO VARCHAR2(20);
+
+-- 2. Preferencias de notificación (1 = activado, 0 = desactivado)
+ALTER TABLE HELPDESK.HD_USUARIOS ADD NOTIF_EMAIL     NUMBER(1) DEFAULT 1 NOT NULL;
+ALTER TABLE HELPDESK.HD_USUARIOS ADD NOTIF_WHATSAPP  NUMBER(1) DEFAULT 0 NOT NULL;
+
+-- 3. Verificar
+SELECT COLUMN_NAME, DATA_TYPE, DATA_LENGTH, NULLABLE, DATA_DEFAULT
+FROM ALL_TAB_COLUMNS
+WHERE OWNER = 'HELPDESK' AND TABLE_NAME = 'HD_USUARIOS'
+ORDER BY COLUMN_ID;
+
+EXIT;

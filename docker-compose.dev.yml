@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  oracle-db-local:
+    image: gvenzl/oracle-xe:21-slim-faststart
+    container_name: helpdesk_db_dev
+    environment:
+      - ORACLE_PASSWORD=Admin123
+      - APP_USER=helpdesk
+      - APP_USER_PASSWORD=Admin123
+    ports:
+      - "1521:1521"
+    volumes:
+      # 1. Persistencia de datos 
+      - oracle_data_dev:/opt/oracle/oradata
+      
+      # 2. CARGA AUTOMÁTICA 
+      - ./db/export.sql:/opt/oracle/scripts/setup/01_export.sql
+volumes:
+  oracle_data_dev:

@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker exec *)",
+      "Bash(docker cp *)",
+      "Bash(npx tsc *)",
+      "Bash(xargs grep *)",
+      "Bash(npm install *)",
+      "PowerShell(cd \"c:\\\\Users\\\\JOSVAL\\\\Desktop\\\\helpdesk-tesis-main\\\\backend\"; npx tsc --noEmit 2>&1 | Where-Object { $_ -notmatch \"node_modules\" }; Write-Host \"BACKEND CHECK DONE\")",
+      "PowerShell(cd \"c:\\\\Users\\\\JOSVAL\\\\Desktop\\\\helpdesk-tesis-main\\\\frontend\"; npx tsc --noEmit 2>&1 | Where-Object { $_ -notmatch \"node_modules\" -and $_ -notmatch \"\\\\.next\" }; Write-Host \"FRONTEND CHECK DONE\")",
+      "PowerShell(cd \"c:\\\\Users\\\\JOSVAL\\\\Desktop\\\\helpdesk-tesis-main\\\\frontend\"; npx tsc --noEmit 2>&1 | Where-Object { $_ -notmatch \"node_modules\" -and $_ -notmatch \"\\\\.next\" -and $_ -match \"error\" })",
+      "PowerShell(cd \"c:\\\\Users\\\\JOSVAL\\\\Desktop\\\\helpdesk-tesis-main\\\\backend\"; npx tsc --noEmit 2>&1 | Where-Object { $_ -notmatch \"node_modules\" }; Write-Host \"--- BACKEND CHECK DONE ---\")",
+      "PowerShell(docker exec helpdesk_db_dev_otro bash -c \"echo 'ALTER SESSION SET \"\"_ORACLE_SCRIPT\"\"=true; ALTER TABLE HELPDESK.HD_USUARIOS ADD TELEFONO VARCHAR2\\(20\\); ALTER TABLE HELPDESK.HD_USUARIOS ADD NOTIF_EMAIL NUMBER\\(1\\) DEFAULT 1 NOT NULL; ALTER TABLE HELPDESK.HD_USUARIOS ADD NOTIF_WHATSAPP NUMBER\\(1\\) DEFAULT 0 NOT NULL; EXIT;' > /tmp/v4.sql && sqlplus helpdesk/Admin123@localhost:1521/XE @/tmp/v4.sql\")",
+      "Bash(npm run *)",
+      "Bash(curl -s http://localhost:4000/api/health)",
+      "Bash(docker start *)",
+      "Bash(curl -s http://localhost:4000/api/tickets/stats -H \"Authorization: Bearer test\")",
+      "Bash(pkill -f \"tsx watch\")",
+      "Bash(npx kill-port *)",
+      "Bash(curl -s -X POST http://localhost:4000/api/auth/login -H 'Content-Type: application/json' -d '{\"email\":\"admin@helpdesk.edu.ec\",\"password\":\"Admin123!\"}')",
+      "Bash(curl -s -X POST http://localhost:4000/api/auth/login -H 'Content-Type: application/json' -d '{\"email\":\"admin@helpdesk.com\",\"password\":\"Admin123!\"}')",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('totalItems:', d.get\\('totalItems'\\), '| pages:', d.get\\('totalPages'\\)\\)\")",
+      "Bash(npx ts-node *)"
+    ]
+  }
+}

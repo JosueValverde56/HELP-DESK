@@ -1,0 +1,101 @@
+/* src/app/dashboard/layout.module.css */
+.container {
+  min-height: 100vh;
+  background: #090a0f; /* Fondo ultra oscuro para que resalten las cards */
+  display: flex;
+  font-family: 'DM Sans', sans-serif;
+}
+
+.sidebar {
+  width: 280px;
+  background: #111318;
+  margin: 1.5rem;
+  border-radius: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  display: flex;
+  flex-direction: column;
+  padding: 2rem 1.5rem;
+  box-shadow: 20px 0 80px rgba(0, 0, 0, 0.4);
+}
+
+.brand {
+  margin-bottom: 3rem;
+  padding: 0 0.5rem;
+}
+
+.brand h2 {
+  font-family: 'Syne', sans-serif;
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: #f1f5f9;
+  letter-spacing: -0.02em;
+}
+
+.brand p {
+  font-family: 'DM Mono', monospace;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  color: #34d399;
+  margin-top: 4px;
+}
+
+.nav {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.navLink {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 1rem;
+  border-radius: 16px;
+  color: #94a3b8;
+  font-weight: 500;
+  font-size: 0.9rem;
+  transition: all 0.2s ease;
+  border: 1px solid transparent;
+}
+
+.navLink:hover {
+  background: rgba(255, 255, 255, 0.03);
+  color: #f1f5f9;
+}
+
+.activeLink {
+  background: rgba(52, 211, 153, 0.08) !important;
+  color: #34d399 !important;
+  border: 1px solid rgba(52, 211, 153, 0.15);
+}
+
+.logoutBtn {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 1rem;
+  margin-top: auto;
+  border-radius: 16px;
+  color: #f87171;
+  font-family: 'DM Mono', monospace;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  transition: all 0.2s;
+  background: transparent;
+  border: 1px solid transparent;
+}
+
+.logoutBtn:hover {
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.15);
+}
+
+.mainContent {
+  flex: 1;
+  padding: 2.5rem;
+  overflow-y: auto;
+}
