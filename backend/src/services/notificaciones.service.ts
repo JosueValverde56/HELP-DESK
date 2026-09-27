@@ -1,65 +1,6 @@
 import nodemailer from 'nodemailer';
 import oracledb from 'oracledb';
 
-// ── Twilio ────────────────────────────────────────────────────────────────────
-let twilioClient: any = null;
-
-async function initTwilio(): Promise<boolean> {
-  if (twilioClient) return true;
-  const sid   = process.env.TWILIO_ACCOUNT_SID;
-  const token = process.env.TWILIO_AUTH_TOKEN;
-  if (!sid || !token || sid === 'AQUI_TU_ACCOUNT_SID') return false;
-  try {
-    const twilio = await import('twilio');
-    twilioClient = twilio.default(sid, token);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** Verifica credenciales Twilio al arrancar */
-export async function verificarConexionWhatsApp(): Promise<void> {
-  const sid   = process.env.TWILIO_ACCOUNT_SID;
-  const token = process.env.TWILIO_AUTH_TOKEN;
-  const from  = process.env.TWILIO_WHATSAPP_FROM;
-
-  if (!sid || !token || sid === 'AQUI_TU_ACCOUNT_SID') {
-    console.log('💬 WhatsApp: no configurado (TWILIO_ACCOUNT_SID vacío — notificaciones desactivadas)');
-    return;
-  }
-  const ok = await initTwilio();
-  if (!ok) {
-    console.error('❌ WhatsApp: falló al inicializar Twilio. Verifica las credenciales.');
-    return;
-  }
-  // Verificación real: listar cuenta
-  try {
-    await twilioClient.api.accounts(sid).fetch();
-    console.log(`✅ WhatsApp Twilio listo: ${from ?? 'sandbox'}`);
-  } catch (err: any) {
-    console.error(`❌ WhatsApp Twilio falló: ${err.message}`);
-    twilioClient = null;
-  }
-}
-
-/** WhatsApp de prueba — envía a un número específico */
-export async function enviarWhatsAppPrueba(telefono: string): Promise<void> {
-  const ok = await initTwilio();
-  if (!ok) throw new Error('WhatsApp no configurado. Revisa TWILIO_ACCOUNT_SID y TWILIO_AUTH_TOKEN en .env');
-
-  const from = process.env.TWILIO_WHATSAPP_FROM;
-  if (!from) throw new Error('Falta TWILIO_WHATSAPP_FROM en .env');
-
-  const to = telefono.startsWith('whatsapp:') ? telefono : `whatsapp:${telefono}`;
-  await twilioClient.messages.create({
-    from,
-    to,
-    body: '✅ *Helpdesk — Prueba de conexión*\n\nLas notificaciones por WhatsApp están funcionando correctamente. Este es un mensaje de prueba enviado desde el panel de administración.',
-  });
-  console.log(`💬 WhatsApp de prueba enviado a ${telefono}`);
-}
-
 // ── Transportador de email ────────────────────────────────────────────────────
 let _transporter: nodemailer.Transporter | null = null;
 
@@ -80,6 +21,13 @@ function getTransporter(): nodemailer.Transporter | null {
   });
 
   return _transporter;
+}
+
+/** Wrapper genérico para enviar emails — silencia si el SMTP no está configurado */
+export async function sendMail(options: nodemailer.SendMailOptions): Promise<void> {
+  const t = getTransporter();
+  if (!t) return;
+  await t.sendMail(options);
 }
 
 /** Verifica la conexión SMTP al arrancar — no bloquea el servidor si falla */
@@ -157,6 +105,19 @@ async function getTicketInfo(idTicket: number): Promise<TicketNotifInfo | null> 
   }
 }
 
+// ── Fecha/hora formateada (Ecuador) ──────────────────────────────────────────
+function fechaHoraEcuador(): string {
+  return new Date().toLocaleString('es-EC', {
+    timeZone: 'America/Guayaquil',
+    day:    '2-digit',
+    month:  'long',
+    year:   'numeric',
+    hour:   '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  });
+}
+
 // ── Colores para templates ────────────────────────────────────────────────────
 const ESTADO_COLOR: Record<string, string> = {
   ABIERTO:     '#3b82f6',
@@ -172,17 +133,28 @@ const PRIO_COLOR: Record<string, string> = {
 
 // ── Template HTML de email ────────────────────────────────────────────────────
 function buildEmailHtml(params: {
-  titulo:    string;
-  cuerpo:    string;
-  codigo:    string;
-  asunto:    string;
-  estado:    string;
-  prioridad: string;
+  nombre:         string;
+  titulo:         string;
+  cuerpo:         string;
+  codigo:         string;
+  asunto:         string;
+  estado:         string;
+  prioridad:      string;
+  accentColor?:   string;
+  extraFila?:     { label: string; value: string };
+  btnTexto?:      string;
 }) {
-  const { titulo, cuerpo, codigo, asunto, estado, prioridad } = params;
-  const url = `${process.env.FRONTEND_URL ?? 'http://localhost:3000'}/dashboard/tickets`;
-  const ec  = ESTADO_COLOR[estado]   ?? '#64748b';
-  const pc  = PRIO_COLOR[prioridad]  ?? '#64748b';
+  const {
+    nombre, titulo, cuerpo, codigo, asunto, estado, prioridad,
+    accentColor, extraFila, btnTexto,
+  } = params;
+
+  const url    = `${process.env.FRONTEND_URL ?? 'http://localhost:3000'}/dashboard/tickets`;
+  const accent = accentColor ?? '#3b82f6';
+  const ec     = ESTADO_COLOR[estado]  ?? '#64748b';
+  const pc     = PRIO_COLOR[prioridad] ?? '#64748b';
+  const fecha  = fechaHoraEcuador();
+  const btn    = btnTexto ?? 'Ver mi ticket →';
 
   return `<!DOCTYPE html>
 <html lang="es">
@@ -192,47 +164,76 @@ function buildEmailHtml(params: {
   <tr><td align="center" style="padding:32px 16px;">
     <table width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%;">
 
+      <!-- Banda de color por tipo de evento -->
+      <tr><td style="background:${accent};height:5px;border-radius:10px 10px 0 0;font-size:0;">&nbsp;</td></tr>
+
       <!-- Header -->
-      <tr><td style="background:#1e293b;padding:20px 28px;border-radius:10px 10px 0 0;">
-        <span style="color:#60a5fa;font-family:monospace;font-size:11px;letter-spacing:2px;text-transform:uppercase;">SISTEMA HELPDESK</span>
+      <tr><td style="background:#1e293b;padding:18px 28px;">
+        <table width="100%" cellpadding="0" cellspacing="0">
+          <tr>
+            <td>
+              <span style="color:#94a3b8;font-family:monospace;font-size:10px;letter-spacing:2px;text-transform:uppercase;">SISTEMA HELPDESK</span>
+            </td>
+            <td align="right">
+              <span style="color:#475569;font-size:10px;">${fecha}</span>
+            </td>
+          </tr>
+        </table>
       </td></tr>
 
-      <!-- Cuerpo -->
-      <tr><td style="background:#ffffff;padding:28px 28px 20px;border:1px solid #e2e8f0;border-top:none;">
-        <h2 style="color:#1e293b;margin:0 0 12px;font-size:17px;">${titulo}</h2>
-        <p style="color:#64748b;margin:0 0 22px;font-size:14px;line-height:1.65;">${cuerpo}</p>
+      <!-- Saludo personalizado -->
+      <tr><td style="background:#ffffff;padding:28px 28px 0;border-left:1px solid #e2e8f0;border-right:1px solid #e2e8f0;">
+        <p style="color:#94a3b8;font-size:13px;margin:0 0 4px;">Hola,</p>
+        <h2 style="color:#1e293b;margin:0 0 6px;font-size:20px;font-weight:700;">${nombre}</h2>
+        <div style="width:36px;height:3px;background:${accent};border-radius:999px;margin-bottom:20px;"></div>
+        <h3 style="color:#1e293b;margin:0 0 10px;font-size:16px;font-weight:600;">${titulo}</h3>
+        <p style="color:#64748b;margin:0 0 22px;font-size:14px;line-height:1.7;">${cuerpo}</p>
+      </td></tr>
 
-        <!-- Ticket card -->
-        <div style="background:#f8fafc;border:1px solid #e2e8f0;border-left:3px solid #3b82f6;border-radius:0 6px 6px 0;padding:14px 18px;margin-bottom:24px;">
-          <table cellpadding="4" cellspacing="0" width="100%">
+      <!-- Ticket card -->
+      <tr><td style="background:#ffffff;padding:0 28px 24px;border-left:1px solid #e2e8f0;border-right:1px solid #e2e8f0;">
+        <div style="background:#f8fafc;border:1px solid #e2e8f0;border-left:4px solid ${accent};border-radius:0 8px 8px 0;padding:16px 20px;">
+          <table cellpadding="5" cellspacing="0" width="100%">
             <tr>
-              <td style="color:#94a3b8;font-size:11px;font-weight:600;text-transform:uppercase;width:90px;">Ticket</td>
+              <td style="color:#94a3b8;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;width:100px;">Código</td>
               <td style="color:#1e293b;font-size:13px;font-weight:700;">${codigo}</td>
             </tr>
             <tr>
-              <td style="color:#94a3b8;font-size:11px;font-weight:600;text-transform:uppercase;">Asunto</td>
+              <td style="color:#94a3b8;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Asunto</td>
               <td style="color:#1e293b;font-size:13px;">${asunto}</td>
             </tr>
             <tr>
-              <td style="color:#94a3b8;font-size:11px;font-weight:600;text-transform:uppercase;">Estado</td>
-              <td><span style="background:${ec}22;color:${ec};padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700;">${estado}</span></td>
+              <td style="color:#94a3b8;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Estado</td>
+              <td><span style="background:${ec}22;color:${ec};padding:2px 10px;border-radius:999px;font-size:11px;font-weight:700;">${estado.replace('_',' ')}</span></td>
             </tr>
             <tr>
-              <td style="color:#94a3b8;font-size:11px;font-weight:600;text-transform:uppercase;">Prioridad</td>
-              <td><span style="background:${pc}22;color:${pc};padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700;">${prioridad}</span></td>
+              <td style="color:#94a3b8;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Prioridad</td>
+              <td><span style="background:${pc}22;color:${pc};padding:2px 10px;border-radius:999px;font-size:11px;font-weight:700;">${prioridad}</span></td>
+            </tr>
+            ${extraFila ? `<tr>
+              <td style="color:#94a3b8;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">${extraFila.label}</td>
+              <td style="color:#1e293b;font-size:13px;font-weight:600;">${extraFila.value}</td>
+            </tr>` : ''}
+            <tr>
+              <td style="color:#94a3b8;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;padding-top:8px;border-top:1px solid #e2e8f0;">Fecha</td>
+              <td style="color:#64748b;font-size:12px;padding-top:8px;border-top:1px solid #e2e8f0;">${fecha}</td>
             </tr>
           </table>
         </div>
+      </td></tr>
 
-        <a href="${url}" style="display:inline-block;background:#2563eb;color:#ffffff;padding:11px 24px;border-radius:7px;text-decoration:none;font-size:13px;font-weight:500;">
-          Ver ticket en el sistema →
+      <!-- Botón de acción -->
+      <tr><td style="background:#ffffff;padding:0 28px 28px;border-left:1px solid #e2e8f0;border-right:1px solid #e2e8f0;">
+        <a href="${url}" style="display:inline-block;background:${accent};color:#ffffff;padding:12px 28px;border-radius:8px;text-decoration:none;font-size:13px;font-weight:600;letter-spacing:.2px;">
+          ${btn}
         </a>
       </td></tr>
 
       <!-- Footer -->
       <tr><td style="background:#f8fafc;padding:14px 28px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 10px 10px;">
-        <p style="color:#94a3b8;font-size:11px;margin:0;">
-          Notificación automática del Sistema Helpdesk — No respondas a este correo.
+        <p style="color:#94a3b8;font-size:11px;margin:0;line-height:1.6;">
+          Notificación automática del Sistema Helpdesk &mdash; No respondas a este correo.<br>
+          Si no esperabas este mensaje, puedes ignorarlo con seguridad.
         </p>
       </td></tr>
 
@@ -260,38 +261,20 @@ async function enviarEmail(to: string, subject: string, html: string): Promise<v
   }
 }
 
-// ── Enviar WhatsApp (Twilio) ───────────────────────────────────────────────────
-async function enviarWhatsApp(phone: string, mensaje: string): Promise<void> {
-  await initTwilio();
-  if (!twilioClient) return;
-  const from = process.env.TWILIO_WHATSAPP_FROM;
-  if (!from) return;
-
-  // El teléfono debe tener código de país: +593999123456
-  const to = phone.startsWith('whatsapp:') ? phone : `whatsapp:${phone}`;
-  try {
-    await twilioClient.messages.create({ from, to, body: mensaje });
-    console.log(`💬 WhatsApp enviado a ${phone}`);
-  } catch (err: any) {
-    console.error(`❌ Error WhatsApp a ${phone}:`, err.message);
-  }
-}
-
-// ── Notificar a una persona (email + WhatsApp si aplica) ─────────────────────
+// ── Notificar a una persona por email ────────────────────────────────────────
 async function notificar(params: {
-  email:          string;
-  telefono:       string | null;
-  notifEmail:     number | null;
-  notifWhatsapp:  number | null;
-  subject:        string;
-  html:           string;
-  waText:         string;
+  email:      string;
+  notifEmail: number | null;
+  subject:    string;
+  html:       string;
+  forzar?:    boolean;  // true = ignorar preferencia del usuario y siempre enviar
+  telefono?:      string | null;
+  notifWhatsapp?: number | null;
+  waText?:        string;
 }): Promise<void> {
-  const promises: Promise<void>[] = [];
-  // null means preference not set → default on; only skip if explicitly 0
-  if ((params.notifEmail  ?? 1) !== 0) promises.push(enviarEmail(params.email, params.subject, params.html));
-  if (params.notifWhatsapp === 1 && params.telefono) promises.push(enviarWhatsApp(params.telefono, params.waText));
-  await Promise.allSettled(promises);
+  if (params.forzar || (params.notifEmail ?? 1) !== 0) {
+    await enviarEmail(params.email, params.subject, params.html);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -336,19 +319,25 @@ export async function notificarTicketCreado(idTicket: number): Promise<void> {
     notifWhatsapp: t.NOTIF_WA_USR,
     subject:       `Ticket registrado: ${t.CODIGO_TICKET}`,
     html: buildEmailHtml({
-      titulo:    '✅ Tu ticket fue registrado',
-      cuerpo:    `Hola <strong>${t.NOMBRE_USUARIO}</strong>, tu solicitud fue recibida y está siendo revisada por el equipo de soporte. En breve un técnico se pondrá en contacto contigo.`,
-      codigo:    t.CODIGO_TICKET,
-      asunto:    t.TITULO,
-      estado:    t.ESTADO,
-      prioridad: t.PRIORIDAD,
+      nombre:      t.NOMBRE_USUARIO,
+      titulo:      '✅ Tu ticket fue registrado exitosamente',
+      cuerpo:      `Tu solicitud de soporte fue recibida y está en cola de atención. En breve un técnico de nuestro equipo se pondrá en contacto contigo. Te notificaremos por este medio cada vez que haya un cambio en tu ticket.`,
+      codigo:      t.CODIGO_TICKET,
+      asunto:      t.TITULO,
+      estado:      t.ESTADO,
+      prioridad:   t.PRIORIDAD,
+      accentColor: '#3b82f6',
+      btnTexto:    'Ver mi ticket →',
     }),
-    waText: `✅ *Helpdesk — Ticket registrado*\n\n` +
-            `Hola ${t.NOMBRE_USUARIO}, tu ticket fue registrado correctamente.\n\n` +
-            `📋 *${t.CODIGO_TICKET}*\n` +
-            `📌 ${t.TITULO}\n` +
-            `🔵 Estado: ${t.ESTADO} | Prioridad: ${t.PRIORIDAD}\n\n` +
-            `Ingresa al sistema para dar seguimiento.`,
+    waText: `🎫 *Ticket Registrado — Helpdesk*\n` +
+            `━━━━━━━━━━━━━━━━━━━━━━\n` +
+            `Hola *${t.NOMBRE_USUARIO}*, hemos recibido tu solicitud de soporte.\n\n` +
+            `📋 *Código:* ${t.CODIGO_TICKET}\n` +
+            `📌 *Asunto:* ${t.TITULO}\n` +
+            `⚡ *Prioridad:* ${t.PRIORIDAD}\n` +
+            `📅 *Fecha:* ${fechaHoraEcuador()}\n\n` +
+            `Tu ticket está en cola y será atendido a la brevedad. Te notificaremos cada vez que haya un cambio.\n\n` +
+            `_Sistema Helpdesk — Soporte Técnico_`,
   });
 
   // ── 2. Notificar al staff (técnico asignado o todos si no hay asignado) ──
@@ -361,17 +350,27 @@ export async function notificarTicketCreado(idTicket: number): Promise<void> {
       notifWhatsapp: t.NOTIF_WA_TEC,
       subject:       `Nuevo ticket asignado: ${t.CODIGO_TICKET}`,
       html: buildEmailHtml({
-        titulo:    '🔔 Tienes un nuevo ticket asignado',
-        cuerpo:    `Hola <strong>${t.NOMBRE_TECNICO}</strong>, se te asignó el siguiente ticket de <strong>${t.NOMBRE_USUARIO}</strong>. Por favor atiéndelo a la brevedad posible.`,
-        codigo:    t.CODIGO_TICKET,
-        asunto:    t.TITULO,
-        estado:    t.ESTADO,
-        prioridad: t.PRIORIDAD,
+        nombre:      t.NOMBRE_TECNICO!,
+        titulo:      '🔔 Tienes un nuevo ticket asignado',
+        cuerpo:      `Se te asignó el ticket de <strong>${t.NOMBRE_USUARIO}</strong>. Por favor revísalo e inicia la atención a la brevedad posible.`,
+        codigo:      t.CODIGO_TICKET,
+        asunto:      t.TITULO,
+        estado:      t.ESTADO,
+        prioridad:   t.PRIORIDAD,
+        accentColor: '#3b82f6',
+        extraFila:   { label: 'Solicitante', value: t.NOMBRE_USUARIO },
+        btnTexto:    'Atender ticket →',
       }),
-      waText: `🔔 *Helpdesk — Nuevo ticket asignado*\n\n` +
-              `Hola ${t.NOMBRE_TECNICO}, tienes un nuevo ticket de *${t.NOMBRE_USUARIO}*:\n\n` +
-              `📋 *${t.CODIGO_TICKET}*\n📌 ${t.TITULO}\n⚡ Prioridad: ${t.PRIORIDAD}\n\n` +
-              `Ingresa al sistema para atenderlo.`,
+      waText: `🔔 *Nuevo Ticket Asignado — Helpdesk*\n` +
+              `━━━━━━━━━━━━━━━━━━━━━━\n` +
+              `Hola *${t.NOMBRE_TECNICO}*, tienes un nuevo ticket asignado.\n\n` +
+              `👤 *Solicitante:* ${t.NOMBRE_USUARIO}\n` +
+              `📋 *Código:* ${t.CODIGO_TICKET}\n` +
+              `📌 *Asunto:* ${t.TITULO}\n` +
+              `⚡ *Prioridad:* ${t.PRIORIDAD}\n` +
+              `📅 *Registrado:* ${fechaHoraEcuador()}\n\n` +
+              `Por favor atiéndelo a la brevedad posible.\n\n` +
+              `_Sistema Helpdesk — Soporte Técnico_`,
     });
   } else {
     // Sin técnico asignado → notificar a TODO el staff (admins + técnicos)
@@ -384,17 +383,27 @@ export async function notificarTicketCreado(idTicket: number): Promise<void> {
         notifWhatsapp: s.notif_wa,
         subject:       `Nuevo ticket sin asignar: ${t.CODIGO_TICKET} — Prioridad ${t.PRIORIDAD}`,
         html: buildEmailHtml({
-          titulo:    '🆕 Nuevo ticket pendiente de atención',
-          cuerpo:    `El usuario <strong>${t.NOMBRE_USUARIO}</strong> abrió un nuevo ticket. Aún no tiene técnico asignado — ¡asígnalo a la brevedad!`,
-          codigo:    t.CODIGO_TICKET,
-          asunto:    t.TITULO,
-          estado:    t.ESTADO,
-          prioridad: t.PRIORIDAD,
+          nombre:      s.nombre,
+          titulo:      '🆕 Nuevo ticket sin técnico asignado',
+          cuerpo:      `El usuario <strong>${t.NOMBRE_USUARIO}</strong> abrió un nuevo ticket que aún no tiene técnico asignado. Por favor ingresa al sistema y asígnalo cuanto antes.`,
+          codigo:      t.CODIGO_TICKET,
+          asunto:      t.TITULO,
+          estado:      t.ESTADO,
+          prioridad:   t.PRIORIDAD,
+          accentColor: '#3b82f6',
+          extraFila:   { label: 'Solicitante', value: t.NOMBRE_USUARIO },
+          btnTexto:    'Asignar ticket →',
         }),
-        waText: `🆕 *Helpdesk — Nuevo ticket sin asignar*\n\n` +
-                `*${t.NOMBRE_USUARIO}* abrió un ticket sin técnico asignado:\n\n` +
-                `📋 *${t.CODIGO_TICKET}*\n📌 ${t.TITULO}\n⚡ Prioridad: ${t.PRIORIDAD}\n\n` +
-                `Ingresa al sistema para asignarlo.`,
+        waText: `🆕 *Ticket Sin Asignar — Helpdesk*\n` +
+                `━━━━━━━━━━━━━━━━━━━━━━\n` +
+                `Se registró un nuevo ticket sin técnico asignado.\n\n` +
+                `👤 *Solicitante:* ${t.NOMBRE_USUARIO}\n` +
+                `📋 *Código:* ${t.CODIGO_TICKET}\n` +
+                `📌 *Asunto:* ${t.TITULO}\n` +
+                `⚡ *Prioridad:* ${t.PRIORIDAD}\n` +
+                `📅 *Registrado:* ${fechaHoraEcuador()}\n\n` +
+                `Ingresa al sistema y asígnalo lo antes posible.\n\n` +
+                `_Sistema Helpdesk — Soporte Técnico_`,
       })
     ));
   }
@@ -418,35 +427,58 @@ export async function notificarCambioEstado(
   };
 
   const mensajeExtra: Record<string, string> = {
-    EN_PROGRESO: 'El equipo de soporte ya está trabajando en tu solicitud. Te notificaremos cuando esté resuelto.',
-    RESUELTO:    '¡Tu ticket fue resuelto! Si el problema persiste, puedes reabrirlo respondiendo en el chat del ticket.',
-    CERRADO:     'El ticket fue cerrado definitivamente. Puedes abrir uno nuevo si el problema persiste.',
-    REABIERTO:   'El ticket fue reabierto y está pendiente de atención nuevamente.',
+    EN_PROGRESO: 'Un técnico de soporte ya está trabajando en tu solicitud. Te avisaremos cuando esté resuelto.',
+    RESUELTO:    'Hemos completado la atención de tu solicitud. Si el problema persiste, puedes reabrirlo desde el sistema.',
+    CERRADO:     'El ticket fue cerrado definitivamente. Si necesitas soporte adicional, abre un nuevo ticket en el sistema.',
+    REABIERTO:   'Tu ticket fue reabierto y está nuevamente en cola de atención. Te notificaremos los avances.',
+  };
+
+  const tituloWa: Record<string, string> = {
+    EN_PROGRESO: '🔧 Tu Ticket Está en Progreso — Helpdesk',
+    RESUELTO:    '✅ Tu Problema Ha Sido Resuelto — Helpdesk',
+    CERRADO:     '🔒 Ticket Cerrado — Helpdesk',
+    REABIERTO:   '🔄 Ticket Reabierto — Helpdesk',
+  };
+
+  const labelFecha: Record<string, string> = {
+    EN_PROGRESO: 'En progreso desde:',
+    RESUELTO:    'Resuelto el:',
+    CERRADO:     'Cerrado el:',
+    REABIERTO:   'Reabierto el:',
   };
 
   const icon = ESTADO_ICON[estadoNuevo] ?? '🔔';
 
-  // Notificar al solicitante
+  // Notificar al solicitante — forzar envío para estados finales críticos
+  const esFinal = ['RESUELTO', 'CERRADO'].includes(estadoNuevo);
   await notificar({
     email:         t.EMAIL_USUARIO,
     telefono:      t.TELEFONO_USUARIO,
     notifEmail:    t.NOTIF_EMAIL_USR,
     notifWhatsapp: t.NOTIF_WA_USR,
+    forzar:        esFinal,
     subject:       `${icon} Tu ticket ${t.CODIGO_TICKET} — Estado: ${estadoNuevo}`,
     html: buildEmailHtml({
-      titulo:    `${icon} Estado actualizado: ${estadoNuevo}`,
-      cuerpo:    `Hola <strong>${t.NOMBRE_USUARIO}</strong>, el estado de tu ticket cambió de <strong>${estadoAnterior}</strong> a <strong>${estadoNuevo}</strong>.<br><br>${mensajeExtra[estadoNuevo] ?? ''}`,
-      codigo:    t.CODIGO_TICKET,
-      asunto:    t.TITULO,
-      estado:    estadoNuevo,
-      prioridad: t.PRIORIDAD,
+      nombre:      t.NOMBRE_USUARIO,
+      titulo:      tituloWa[estadoNuevo]?.replace(' — Helpdesk', '') ?? `${icon} Estado actualizado`,
+      cuerpo:      `El estado de tu ticket ha cambiado de <strong>${estadoAnterior.replace('_',' ')}</strong> a <strong>${estadoNuevo.replace('_',' ')}</strong>.<br><br>${mensajeExtra[estadoNuevo] ?? ''}`,
+      codigo:      t.CODIGO_TICKET,
+      asunto:      t.TITULO,
+      estado:      estadoNuevo,
+      prioridad:   t.PRIORIDAD,
+      accentColor: { EN_PROGRESO: '#f59e0b', RESUELTO: '#10b981', CERRADO: '#64748b', REABIERTO: '#8b5cf6' }[estadoNuevo] ?? '#3b82f6',
+      extraFila:   { label: labelFecha[estadoNuevo] ?? 'Actualizado', value: fechaHoraEcuador() },
+      btnTexto:    estadoNuevo === 'RESUELTO' ? 'Ver resolución →' : estadoNuevo === 'CERRADO' ? 'Ver ticket cerrado →' : 'Ver mi ticket →',
     }),
-    waText: `${icon} *Helpdesk — Estado actualizado*\n\n` +
-            `Hola ${t.NOMBRE_USUARIO},\n\n` +
-            `Tu ticket *${t.CODIGO_TICKET}* cambió:\n` +
-            `${estadoAnterior} ➡️ *${estadoNuevo}*\n\n` +
-            `${mensajeExtra[estadoNuevo] ?? ''}\n` +
-            `📌 ${t.TITULO}`,
+    waText: `${tituloWa[estadoNuevo] ?? `${icon} Estado Actualizado — Helpdesk`}\n` +
+            `━━━━━━━━━━━━━━━━━━━━━━\n` +
+            `Hola *${t.NOMBRE_USUARIO}*,\n\n` +
+            `📋 *Código:* ${t.CODIGO_TICKET}\n` +
+            `📌 *Asunto:* ${t.TITULO}\n` +
+            `🔄 *Estado:* ${estadoAnterior} ➡️ *${estadoNuevo}*\n` +
+            `📅 *${labelFecha[estadoNuevo] ?? 'Actualizado:'}* ${fechaHoraEcuador()}\n\n` +
+            `${mensajeExtra[estadoNuevo] ?? ''}\n\n` +
+            `_Sistema Helpdesk — Soporte Técnico_`,
   });
 
   // Si fue REABIERTO → notificar también al técnico asignado
@@ -458,15 +490,26 @@ export async function notificarCambioEstado(
       notifWhatsapp: t.NOTIF_WA_TEC,
       subject:       `🔄 Ticket reabierto: ${t.CODIGO_TICKET}`,
       html: buildEmailHtml({
-        titulo:    '🔄 El usuario reabrió el ticket',
-        cuerpo:    `Hola <strong>${t.NOMBRE_TECNICO}</strong>, el usuario <strong>${t.NOMBRE_USUARIO}</strong> reabrió el ticket porque el problema no fue resuelto completamente.`,
-        codigo:    t.CODIGO_TICKET,
-        asunto:    t.TITULO,
-        estado:    estadoNuevo,
-        prioridad: t.PRIORIDAD,
+        nombre:      t.NOMBRE_TECNICO!,
+        titulo:      '🔄 El usuario reabrió el ticket',
+        cuerpo:      `<strong>${t.NOMBRE_USUARIO}</strong> reportó que el problema no fue resuelto completamente y reabrió el ticket. Por favor revisa el historial y continúa la atención.`,
+        codigo:      t.CODIGO_TICKET,
+        asunto:      t.TITULO,
+        estado:      estadoNuevo,
+        prioridad:   t.PRIORIDAD,
+        accentColor: '#8b5cf6',
+        extraFila:   { label: 'Solicitante', value: t.NOMBRE_USUARIO },
+        btnTexto:    'Revisar ticket →',
       }),
-      waText: `🔄 *Helpdesk — Ticket reabierto*\n\n` +
-              `Hola ${t.NOMBRE_TECNICO}, el ticket *${t.CODIGO_TICKET}* fue reabierto por ${t.NOMBRE_USUARIO}.\n📌 ${t.TITULO}`,
+      waText: `🔄 *Ticket Reabierto — Helpdesk*\n` +
+              `━━━━━━━━━━━━━━━━━━━━━━\n` +
+              `Hola *${t.NOMBRE_TECNICO}*,\n\n` +
+              `El usuario *${t.NOMBRE_USUARIO}* reporta que el problema no fue resuelto completamente.\n\n` +
+              `📋 *Código:* ${t.CODIGO_TICKET}\n` +
+              `📌 *Asunto:* ${t.TITULO}\n` +
+              `📅 *Reabierto el:* ${fechaHoraEcuador()}\n\n` +
+              `Ingresa al sistema para revisar y resolver la solicitud.\n\n` +
+              `_Sistema Helpdesk — Soporte Técnico_`,
     });
   }
 }
@@ -490,15 +533,26 @@ export async function notificarComentario(
       notifWhatsapp: t.NOTIF_WA_TEC,
       subject:       `Nueva respuesta en ticket: ${t.CODIGO_TICKET}`,
       html: buildEmailHtml({
-        titulo:    '💬 Nueva respuesta del usuario',
-        cuerpo:    `El usuario <strong>${t.NOMBRE_USUARIO}</strong> respondió en el ticket. Revisa su mensaje para dar seguimiento.`,
-        codigo:    t.CODIGO_TICKET,
-        asunto:    t.TITULO,
-        estado:    t.ESTADO,
-        prioridad: t.PRIORIDAD,
+        nombre:      t.NOMBRE_TECNICO!,
+        titulo:      '💬 Nueva respuesta del usuario',
+        cuerpo:      `<strong>${t.NOMBRE_USUARIO}</strong> escribió una nueva respuesta en el ticket. Ingresa al sistema para leer su mensaje y dar el seguimiento correspondiente.`,
+        codigo:      t.CODIGO_TICKET,
+        asunto:      t.TITULO,
+        estado:      t.ESTADO,
+        prioridad:   t.PRIORIDAD,
+        accentColor: '#8b5cf6',
+        extraFila:   { label: 'De', value: t.NOMBRE_USUARIO },
+        btnTexto:    'Ver respuesta →',
       }),
-      waText: `💬 *Helpdesk — Nueva respuesta*\n\n` +
-              `El usuario ${t.NOMBRE_USUARIO} respondió en el ticket *${t.CODIGO_TICKET}*.\nIngresa al sistema para ver el mensaje.`,
+      waText: `💬 *Nueva Respuesta de Usuario — Helpdesk*\n` +
+              `━━━━━━━━━━━━━━━━━━━━━━\n` +
+              `Hola *${t.NOMBRE_TECNICO}*,\n\n` +
+              `El usuario *${t.NOMBRE_USUARIO}* respondió en el ticket.\n\n` +
+              `📋 *Código:* ${t.CODIGO_TICKET}\n` +
+              `📌 *Asunto:* ${t.TITULO}\n` +
+              `📅 *Enviado:* ${fechaHoraEcuador()}\n\n` +
+              `Ingresa al sistema para ver el mensaje y continuar la atención.\n\n` +
+              `_Sistema Helpdesk — Soporte Técnico_`,
     });
   } else if (!comentoElDueno) {
     // Comentó el técnico → avisar al solicitante
@@ -509,30 +563,38 @@ export async function notificarComentario(
       notifWhatsapp: t.NOTIF_WA_USR,
       subject:       `Respuesta en tu ticket: ${t.CODIGO_TICKET}`,
       html: buildEmailHtml({
-        titulo:    '💬 El soporte técnico te respondió',
-        cuerpo:    `Hola <strong>${t.NOMBRE_USUARIO}</strong>, tienes una nueva respuesta del equipo de soporte en tu ticket.`,
-        codigo:    t.CODIGO_TICKET,
-        asunto:    t.TITULO,
-        estado:    t.ESTADO,
-        prioridad: t.PRIORIDAD,
+        nombre:      t.NOMBRE_USUARIO,
+        titulo:      '💬 El soporte técnico te respondió',
+        cuerpo:      `Tienes una nueva respuesta de nuestro equipo de soporte técnico en tu ticket. Ingresa al sistema para leer el mensaje y responder si es necesario.`,
+        codigo:      t.CODIGO_TICKET,
+        asunto:      t.TITULO,
+        estado:      t.ESTADO,
+        prioridad:   t.PRIORIDAD,
+        accentColor: '#8b5cf6',
+        btnTexto:    'Leer respuesta →',
       }),
-      waText: `💬 *Helpdesk — Respuesta de soporte*\n\n` +
-              `Hola ${t.NOMBRE_USUARIO},\n\nEl equipo de soporte respondió tu ticket *${t.CODIGO_TICKET}*.\nIngresa al sistema para ver la respuesta.`,
+      waText: `💬 *Soporte Técnico Te Respondió — Helpdesk*\n` +
+              `━━━━━━━━━━━━━━━━━━━━━━\n` +
+              `Hola *${t.NOMBRE_USUARIO}*,\n\n` +
+              `El equipo de soporte respondió en tu ticket.\n\n` +
+              `📋 *Código:* ${t.CODIGO_TICKET}\n` +
+              `📌 *Asunto:* ${t.TITULO}\n` +
+              `📅 *Enviado:* ${fechaHoraEcuador()}\n\n` +
+              `Ingresa al sistema para leer la respuesta.\n\n` +
+              `_Sistema Helpdesk — Soporte Técnico_`,
     });
   }
 }
 
-/** Bienvenida al crear un usuario → envía credenciales por email y WhatsApp */
+/** Bienvenida al crear un usuario → envía credenciales por email */
 export async function notificarBienvenida(params: {
-  nombre:         string;
-  email:          string;
-  passwordPlano:  string;
-  rol:            string;
-  telefono:       string | null;
-  notifEmail:     number;
-  notifWhatsapp:  number;
+  nombre:        string;
+  email:         string;
+  passwordPlano: string;
+  rol:           string;
+  notifEmail:    number;
 }): Promise<void> {
-  const { nombre, email, passwordPlano, rol, telefono, notifEmail, notifWhatsapp } = params;
+  const { nombre, email, passwordPlano, rol, notifEmail } = params;
   const url = process.env.FRONTEND_URL ?? 'http://localhost:3000';
 
   const rolLabel: Record<string, string> = {
@@ -607,20 +669,7 @@ export async function notificarBienvenida(params: {
 </body>
 </html>`;
 
-  const waText = `👋 *Bienvenido al Helpdesk, ${nombre}!*\n\n` +
-    `Tu cuenta ha sido creada como *${rolLabel[rol] ?? rol}*.\n\n` +
-    `📧 *Correo:* ${email}\n` +
-    `🔑 *Contraseña temporal:* ${passwordPlano}\n\n` +
-    `${esPasante
-      ? '⏳ Tu acceso está pendiente de aprobación por el administrador.'
-      : `🔗 Ingresa en: ${url}/login`
-    }\n\n` +
-    `⚠️ Cambia tu contraseña al primer ingreso por seguridad.`;
-
-  const promises: Promise<void>[] = [];
-  if (notifEmail !== 0) promises.push(enviarEmail(email, 'Bienvenido — Tus credenciales de acceso', htmlEmail));
-  if (notifWhatsapp === 1 && telefono) promises.push(enviarWhatsApp(telefono, waText));
-  await Promise.allSettled(promises);
+  if (notifEmail !== 0) await enviarEmail(email, 'Bienvenido — Tus credenciales de acceso', htmlEmail);
 }
 
 /** Alerta de SLA vencido → avisar al técnico asignado (o admin si no hay técnico) */
@@ -652,23 +701,34 @@ export async function notificarSLAVencido(idTicket: number): Promise<void> {
     notifWhatsapp: destino.notifWhatsapp,
     subject:       `⚠️ SLA vencido — ${t.CODIGO_TICKET} requiere atención inmediata`,
     html: buildEmailHtml({
-      titulo:    '⚠️ SLA Vencido — Atención requerida',
-      cuerpo:    `Hola <strong>${destino.nombre}</strong>, el ticket <strong>${t.CODIGO_TICKET}</strong> ha superado su tiempo de respuesta (SLA) y requiere atención <strong style="color:#ef4444;">inmediata</strong>.`,
-      codigo:    t.CODIGO_TICKET,
-      asunto:    t.TITULO,
-      estado:    t.ESTADO,
-      prioridad: t.PRIORIDAD,
+      nombre:      destino.nombre,
+      titulo:      '🚨 SLA Vencido — Atención inmediata requerida',
+      cuerpo:      `El ticket <strong>${t.CODIGO_TICKET}</strong> ha superado su tiempo de respuesta establecido (SLA). Es necesario resolverlo de forma <strong style="color:#ef4444;">inmediata</strong> para cumplir con los acuerdos de nivel de servicio.`,
+      codigo:      t.CODIGO_TICKET,
+      asunto:      t.TITULO,
+      estado:      t.ESTADO,
+      prioridad:   t.PRIORIDAD,
+      accentColor: '#ef4444',
+      extraFila:   { label: 'SLA vencido', value: fechaHoraEcuador() },
+      btnTexto:    'Atender ahora →',
     }),
-    waText: `⚠️ *Helpdesk — SLA Vencido*\n\n` +
-            `Hola ${destino.nombre},\n\nEl ticket *${t.CODIGO_TICKET}* ha superado su SLA y requiere atención inmediata.\n\n` +
-            `📌 ${t.TITULO}\n⚡ Prioridad: ${t.PRIORIDAD}\n\nIngresa al sistema para atenderlo.`,
+    waText: `🚨 *¡ALERTA! SLA Vencido — Helpdesk*\n` +
+            `━━━━━━━━━━━━━━━━━━━━━━\n` +
+            `Hola *${destino.nombre}*,\n\n` +
+            `El siguiente ticket ha superado su tiempo de respuesta (SLA).\n\n` +
+            `📋 *Código:* ${t.CODIGO_TICKET}\n` +
+            `📌 *Asunto:* ${t.TITULO}\n` +
+            `⚡ *Prioridad:* ${t.PRIORIDAD}\n` +
+            `⏰ *Vencido el:* ${fechaHoraEcuador()}\n\n` +
+            `⚠️ Se requiere atención *INMEDIATA*. Ingresa al sistema para resolver el ticket.\n\n` +
+            `_Sistema Helpdesk — Soporte Técnico_`,
   });
 }
 
 /** Asignación de técnico → avisar al técnico */
 export async function notificarAsignacion(
   idTicket: number,
-  idTecnico: number
+  _idTecnico: number
 ): Promise<void> {
   const t = await getTicketInfo(idTicket);
   if (!t || !t.EMAIL_TECNICO || !t.NOMBRE_TECNICO) return;
@@ -680,15 +740,27 @@ export async function notificarAsignacion(
     notifWhatsapp: t.NOTIF_WA_TEC,
     subject:       `Se te asignó el ticket: ${t.CODIGO_TICKET}`,
     html: buildEmailHtml({
-      titulo:    '📋 Ticket asignado a ti',
-      cuerpo:    `Hola <strong>${t.NOMBRE_TECNICO}</strong>, se te asignó el siguiente ticket. Revísalo e inicia la atención.`,
-      codigo:    t.CODIGO_TICKET,
-      asunto:    t.TITULO,
-      estado:    t.ESTADO,
-      prioridad: t.PRIORIDAD,
+      nombre:      t.NOMBRE_TECNICO!,
+      titulo:      '📋 Se te asignó un ticket de soporte',
+      cuerpo:      `El administrador te asignó el ticket de <strong>${t.NOMBRE_USUARIO}</strong>. Por favor revísalo e inicia la atención cuanto antes.`,
+      codigo:      t.CODIGO_TICKET,
+      asunto:      t.TITULO,
+      estado:      t.ESTADO,
+      prioridad:   t.PRIORIDAD,
+      accentColor: '#3b82f6',
+      extraFila:   { label: 'Solicitante', value: t.NOMBRE_USUARIO },
+      btnTexto:    'Iniciar atención →',
     }),
-    waText: `📋 *Helpdesk — Ticket asignado*\n\n` +
-            `Hola ${t.NOMBRE_TECNICO},\n\nSe te asignó el ticket *${t.CODIGO_TICKET}*:\n📌 ${t.TITULO}\n⚡ Prioridad: ${t.PRIORIDAD}\n\nIngresa al sistema para atenderlo.`,
+    waText: `📋 *Ticket Asignado a Ti — Helpdesk*\n` +
+            `━━━━━━━━━━━━━━━━━━━━━━\n` +
+            `Hola *${t.NOMBRE_TECNICO}*, se te ha asignado un nuevo ticket para atender.\n\n` +
+            `👤 *Solicitante:* ${t.NOMBRE_USUARIO}\n` +
+            `📋 *Código:* ${t.CODIGO_TICKET}\n` +
+            `📌 *Asunto:* ${t.TITULO}\n` +
+            `⚡ *Prioridad:* ${t.PRIORIDAD}\n` +
+            `📅 *Asignado:* ${fechaHoraEcuador()}\n\n` +
+            `Ingresa al sistema para iniciar la atención.\n\n` +
+            `_Sistema Helpdesk — Soporte Técnico_`,
   });
 }
 

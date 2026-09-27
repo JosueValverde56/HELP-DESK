@@ -12,6 +12,12 @@ import {
   notificarComentario,
   notificarAsignacion,
 } from '../services/notificaciones.service.js';
+import {
+  notifInterna_TicketCreado,
+  notifInterna_EstadoCambiado,
+  notifInterna_Asignado,
+  notifInterna_Comentario,
+} from '../services/notifInterna.service.js';
 
 async function insertHistorial(params: {
   idTicket:       number;
@@ -59,7 +65,8 @@ export function registerHistorialListeners(): void {
     cache.invalidate('stats:');
     cache.invalidate('reportes:');
     // Notificaciones — fire and forget
-    notificarTicketCreado(event.idTicket).catch(() => {});
+    notificarTicketCreado(event.idTicket).catch(err => console.error('❌ notificarTicketCreado:', err.message));
+    notifInterna_TicketCreado(event.idTicket, event.codigoTicket).catch(err => console.error('❌ notifInterna_TicketCreado:', err.message));
   });
 
   ticketEmitter.on('ticket.status_changed', (event: TicketStatusChangedEvent) => {
@@ -78,10 +85,13 @@ export function registerHistorialListeners(): void {
     if (event.estadoAnterior === 'ASIGNACION') {
       const idTecnico = Number(event.estadoNuevo?.replace('ASIGNADO:', ''));
       if (!isNaN(idTecnico) && idTecnico > 0) {
-        notificarAsignacion(event.idTicket, idTecnico).catch(() => {});
+        notificarAsignacion(event.idTicket, idTecnico).catch(err => console.error('❌ notificarAsignacion:', err.message));
+        notifInterna_Asignado(event.idTicket, idTecnico).catch(err => console.error('❌ notifInterna_Asignado:', err.message));
       }
     } else {
-      notificarCambioEstado(event.idTicket, event.estadoAnterior, event.estadoNuevo).catch(() => {});
+      console.log(`📧 Enviando notificación de estado: ${event.estadoAnterior} → ${event.estadoNuevo} (ticket #${event.idTicket})`);
+      notificarCambioEstado(event.idTicket, event.estadoAnterior, event.estadoNuevo).catch(err => console.error('❌ notificarCambioEstado:', err.message));
+      notifInterna_EstadoCambiado(event.idTicket, event.estadoNuevo).catch(err => console.error('❌ notifInterna_EstadoCambiado:', err.message));
     }
   });
 
@@ -92,7 +102,8 @@ export function registerHistorialListeners(): void {
       accion:    'COMENTARIO',
       detalle:   event.detalle,
     });
-    notificarComentario(event.idTicket, event.idUsuario).catch(() => {});
+    notificarComentario(event.idTicket, event.idUsuario).catch(err => console.error('❌ notificarComentario:', err.message));
+    notifInterna_Comentario(event.idTicket, event.idUsuario).catch(err => console.error('❌ notifInterna_Comentario:', err.message));
   });
 
   console.log('✅ Listeners de historial y notificaciones registrados');

@@ -11,7 +11,7 @@ import {
   Clock, CheckCircle2, X, MessageSquare, History,
   ChevronLeft, ChevronRight, AlertTriangle, UserCheck,
   Lock, Star, Paperclip, Download, Timer, Bookmark,
-  RotateCcw, Zap, WifiOff,
+  RotateCcw, Zap, WifiOff, Pencil, Check, Eye, EyeOff,
 } from 'lucide-react';
 import styles from './page.module.css';
 import { useSession } from 'next-auth/react';
@@ -47,6 +47,23 @@ interface Stats {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+const GYE_TZ = 'America/Guayaquil';
+
+function fmtDate(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  // Extraer YYYY-MM-DD directamente del string ISO (evita parsing de timezone ambiguo)
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return '—';
+  return `${m[3]}/${m[2]}/${m[1]}`;
+}
+
+function fmtDateTime(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '—';
+  return d.toLocaleString('es-EC', { timeZone: GYE_TZ, day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
 const PRIORIDAD_MOD: Record<string, string> = {
   ALTA:  styles.badgeRed,
   MEDIA: styles.badgeAmber,
@@ -60,6 +77,32 @@ const ESTADO_MOD: Record<string, string> = {
   CERRADO:     styles.badgeGray,
   REABIERTO:   styles.badgeRed,
 };
+
+// ── SLA Tag para la tabla ─────────────────────────────────────────────────────
+function SlaTag({ fechaSla, slaVencido, estado }: { fechaSla: string | null; slaVencido: number; estado: string }) {
+  if (!fechaSla || ['RESUELTO', 'CERRADO'].includes(estado)) {
+    return <span style={{ color: '#334155', fontSize: '0.7rem' }}>—</span>;
+  }
+  if (slaVencido === 1) {
+    return (
+      <span style={{ fontSize: '0.65rem', fontWeight: 700, color: '#f87171', background: 'rgba(248,113,113,0.12)', border: '1px solid rgba(248,113,113,0.25)', padding: '2px 6px', borderRadius: '5px' }}>
+        VENCIDO
+      </span>
+    );
+  }
+  const diff = new Date(fechaSla).getTime() - Date.now();
+  const hrs  = diff / 3_600_000;
+  const color = hrs < 2 ? '#f87171' : hrs < 8 ? '#fbbf24' : '#34d399';
+  let label: string;
+  if (hrs < 1)       label = `${Math.round(hrs * 60)}m`;
+  else if (hrs < 24) label = `${Math.floor(hrs)}h ${Math.round((hrs % 1) * 60)}m`;
+  else               label = `${Math.floor(hrs / 24)}d ${Math.floor(hrs % 24)}h`;
+  return (
+    <span style={{ fontSize: '0.65rem', fontWeight: 600, color, background: `${color}18`, border: `1px solid ${color}30`, padding: '2px 6px', borderRadius: '5px' }}>
+      {label}
+    </span>
+  );
+}
 
 // ── SLA Countdown ─────────────────────────────────────────────────────────────
 function SlaCountdown({ fechaSla, slaVencido }: { fechaSla: string; slaVencido: number }) {
@@ -165,6 +208,7 @@ export default function TicketsPage() {
   const [filterDesde, setFilterDesde]     = useState('');
   const [filterHasta, setFilterHasta]     = useState('');
   const [savedFilters, setSavedFilters]   = useState(false);
+  const [soloActivos, setSoloActivos]     = useState(true);  // ocultar resueltos/cerrados por defecto
 
   // ── Modal crear ───────────────────────────────────────────────────────────
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -195,10 +239,24 @@ export default function TicketsPage() {
   const [csat, setCsat]             = useState(0);
   const [savingCsat, setSavingCsat] = useState(false);
 
+  // ── Editar SLA ────────────────────────────────────────────────────────────
+  const [editingSla, setEditingSla]   = useState(false);
+  const [newSlaDate, setNewSlaDate]   = useState('');
+  const [savingSla, setSavingSla]     = useState(false);
+
+  // ── Reabrir ticket ────────────────────────────────────────────────────────
+  const [reabriendo, setReabriendo]   = useState(false);
+
   // ── Adjuntos ──────────────────────────────────────────────────────────────
   const [adjuntos, setAdjuntos]           = useState<any[]>([]);
   const [uploadingFile, setUploadingFile] = useState(false);
   const fileInputRef                      = useRef<HTMLInputElement>(null);
+
+  // ── Tickets recientes (sin filtros) ──────────────────────────────────────
+  const [recientes, setRecientes]         = useState<Ticket[]>([]);
+
+  // ── Auto-apertura desde URL ?open=ID (vinculado desde notificaciones) ────
+  const autoOpenHandled                   = useRef(false);
 
   // ── Socket.io ─────────────────────────────────────────────────────────────
   const socketRef                       = useRef<Socket | null>(null);
@@ -241,6 +299,7 @@ export default function TicketsPage() {
         q:         debouncedSearch || undefined,
         desde:     filterDesde     || undefined,
         hasta:     filterHasta     || undefined,
+        activos:   soloActivos && !filterEstado ? '1' : undefined,
       });
       setTickets(res.tickets);
       setTotalPages(res.totalPages);
@@ -250,7 +309,7 @@ export default function TicketsPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, filterEstado, filterPrioridad, debouncedSearch, filterDesde, filterHasta]);
+  }, [page, filterEstado, filterPrioridad, debouncedSearch, filterDesde, filterHasta, soloActivos]);
 
   useEffect(() => { loadTickets(); }, [loadTickets]);
 
@@ -276,6 +335,26 @@ export default function TicketsPage() {
       }).catch(() => {});
     }
   }, [userRol]);
+
+  // ── Cargar tickets recientes (sin filtros, para el panel superior) ────────
+  useEffect(() => {
+    ticketsService.getAll({ page: 1, limit: 5 })
+      .then(res => setRecientes(res.tickets))
+      .catch(() => {});
+  }, []);
+
+  // ── Auto-abrir ticket desde URL ?open=ID (desde notificaciones) ──────────
+  useEffect(() => {
+    if (loading || autoOpenHandled.current) return;
+    const params = new URLSearchParams(window.location.search);
+    const openId = Number(params.get('open'));
+    if (!openId) return;
+    const target = tickets.find(t => t.ID_TICKET === openId);
+    if (target) {
+      autoOpenHandled.current = true;
+      openDetail(target);
+    }
+  }, [tickets, loading]);
 
   // ── Socket.io ─────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -378,6 +457,7 @@ export default function TicketsPage() {
     if (selectedTicket) socketRef.current?.emit('leave_ticket', selectedTicket.ID_TICKET);
     setIsDetailOpen(false);
     setSelected(null);
+    setEditingSla(false);
   };
 
   // ── Crear ticket ──────────────────────────────────────────────────────────
@@ -485,6 +565,27 @@ export default function TicketsPage() {
     }
   };
 
+  // ── Guardar SLA ───────────────────────────────────────────────────────────
+  const handleSaveSla = async () => {
+    if (!newSlaDate || !selectedTicket) return;
+    setSavingSla(true);
+    try {
+      await ticketsService.updateSLA(selectedTicket.ID_TICKET, newSlaDate);
+      setSelected(prev => prev ? { ...prev, FECHA_SLA: newSlaDate + ':00', SLA_VENCIDO: 0 } : prev);
+      setTickets(prev => prev.map(t =>
+        t.ID_TICKET === selectedTicket.ID_TICKET
+          ? { ...t, FECHA_SLA: newSlaDate + ':00', SLA_VENCIDO: 0 }
+          : t
+      ));
+      setEditingSla(false);
+      toast('SLA actualizado correctamente', 'success');
+    } catch (err: any) {
+      toast(err.response?.data?.error || 'Error al actualizar el SLA', 'error');
+    } finally {
+      setSavingSla(false);
+    }
+  };
+
   // ── Calificar CSAT ────────────────────────────────────────────────────────
   const handleCalificar = async (stars: number) => {
     if (!selectedTicket || selectedTicket.CALIFICACION) return;
@@ -501,6 +602,24 @@ export default function TicketsPage() {
       toast(err.response?.data?.error || 'Error al calificar', 'error');
     } finally {
       setSavingCsat(false);
+    }
+  };
+
+  // ── Reabrir ticket ────────────────────────────────────────────────────────
+  const handleReabrir = async () => {
+    if (!selectedTicket) return;
+    setReabriendo(true);
+    try {
+      await ticketsService.reabrir(selectedTicket.ID_TICKET);
+      setSelected(prev => prev ? { ...prev, ESTADO: 'REABIERTO' } : prev);
+      setTickets(prev => prev.map(t =>
+        t.ID_TICKET === selectedTicket.ID_TICKET ? { ...t, ESTADO: 'REABIERTO' } : t
+      ));
+      toast('Ticket reabierto exitosamente', 'success');
+    } catch (err: any) {
+      toast(err.response?.data?.error || 'Error al reabrir el ticket', 'error');
+    } finally {
+      setReabriendo(false);
     }
   };
 
@@ -580,19 +699,73 @@ export default function TicketsPage() {
         </div>
       </div>
 
+      {/* ── Tickets recientes ── */}
+      {recientes.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+          <span style={{ color: '#475569', fontSize: '0.72rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+            Tickets recientes
+          </span>
+          <div style={{ display: 'flex', gap: '0.75rem', overflowX: 'auto', paddingBottom: '0.25rem' }}>
+            {recientes.map(t => {
+              const estadoColor: Record<string, string> = {
+                ABIERTO: '#f87171', EN_PROGRESO: '#fbbf24',
+                RESUELTO: '#34d399', CERRADO: '#60a5fa', REABIERTO: '#a78bfa',
+              };
+              const c = estadoColor[t.ESTADO] ?? '#64748b';
+              return (
+                <button
+                  key={t.ID_TICKET}
+                  onClick={() => openDetail(t)}
+                  style={{
+                    flexShrink: 0, width: 200,
+                    background: '#111318', border: `1px solid rgba(255,255,255,0.07)`,
+                    borderLeft: `3px solid ${c}`,
+                    borderRadius: '10px', padding: '0.7rem 0.9rem',
+                    textAlign: 'left', cursor: 'pointer',
+                    transition: 'background 0.15s',
+                  }}
+                  onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.04)')}
+                  onMouseLeave={e => (e.currentTarget.style.background = '#111318')}
+                >
+                  <p style={{ margin: '0 0 3px', color: '#60a5fa', fontSize: '0.68rem', fontFamily: 'monospace' }}>
+                    {t.CODIGO_TICKET}
+                  </p>
+                  <p style={{ margin: '0 0 6px', color: '#e2e8f0', fontSize: '0.78rem', fontWeight: 600,
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {t.TITULO}
+                  </p>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span style={{ fontSize: '0.65rem', fontWeight: 700, color: c,
+                      background: `${c}18`, border: `1px solid ${c}30`,
+                      padding: '1px 6px', borderRadius: '4px' }}>
+                      {t.ESTADO.replace('_', ' ')}
+                    </span>
+                    <span style={{ fontSize: '0.65rem', color: '#475569' }}>
+                      {fmtDate(t.FECHA_CREACION)}
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* ── Tabla ── */}
       <div className={styles.tableCard}>
         {/* Filtros */}
-        <div className={styles.tableTop}>
-          <div className={styles.searchWrapper}>
-            <Search size={15} className={styles.searchIcon} />
-            <input
-              className={styles.searchInput}
-              type="text"
-              placeholder="Buscar por código o título..."
-              value={searchTerm}
-              onChange={e => setSearch(e.target.value)}
-            />
+        <div className={styles.tableTop} style={{ flexDirection: 'column', alignItems: 'stretch', gap: '0.75rem' }}>
+          <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+            <div className={styles.searchWrapper}>
+              <Search size={15} className={styles.searchIcon} />
+              <input
+                className={styles.searchInput}
+                type="text"
+                placeholder="Buscar por código o título..."
+                value={searchTerm}
+                onChange={e => setSearch(e.target.value)}
+              />
+            </div>
           </div>
 
           <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -600,32 +773,32 @@ export default function TicketsPage() {
               value={filterEstado}
               onChange={e => setFilterEstado(e.target.value)}
               style={{
-                padding: '0.4rem 0.7rem', background: 'rgba(255,255,255,0.04)',
+                padding: '0.4rem 0.7rem', background: '#111318',
                 border: '1px solid rgba(255,255,255,0.1)', borderRadius: '7px',
                 color: filterEstado ? '#e2e8f0' : '#475569', fontSize: '0.8rem', cursor: 'pointer',
               }}
             >
-              <option value="">Todos los estados</option>
-              <option value="ABIERTO">Abierto</option>
-              <option value="EN_PROGRESO">En Progreso</option>
-              <option value="RESUELTO">Resuelto</option>
-              <option value="REABIERTO">Reabierto</option>
-              <option value="CERRADO">Cerrado</option>
+              <option style={{ background: '#111318', color: '#e2e8f0' }} value="">Todos los estados</option>
+              <option style={{ background: '#111318', color: '#e2e8f0' }} value="ABIERTO">Abierto</option>
+              <option style={{ background: '#111318', color: '#e2e8f0' }} value="EN_PROGRESO">En Progreso</option>
+              <option style={{ background: '#111318', color: '#e2e8f0' }} value="RESUELTO">Resuelto</option>
+              <option style={{ background: '#111318', color: '#e2e8f0' }} value="REABIERTO">Reabierto</option>
+              <option style={{ background: '#111318', color: '#e2e8f0' }} value="CERRADO">Cerrado</option>
             </select>
 
             <select
               value={filterPrioridad}
               onChange={e => setFilterPrio(e.target.value)}
               style={{
-                padding: '0.4rem 0.7rem', background: 'rgba(255,255,255,0.04)',
+                padding: '0.4rem 0.7rem', background: '#111318',
                 border: '1px solid rgba(255,255,255,0.1)', borderRadius: '7px',
                 color: filterPrioridad ? '#e2e8f0' : '#475569', fontSize: '0.8rem', cursor: 'pointer',
               }}
             >
-              <option value="">Todas las prioridades</option>
-              <option value="ALTA">Alta</option>
-              <option value="MEDIA">Media</option>
-              <option value="BAJA">Baja</option>
+              <option style={{ background: '#111318', color: '#e2e8f0' }} value="">Todas las prioridades</option>
+              <option style={{ background: '#111318', color: '#e2e8f0' }} value="ALTA">Alta</option>
+              <option style={{ background: '#111318', color: '#e2e8f0' }} value="MEDIA">Media</option>
+              <option style={{ background: '#111318', color: '#e2e8f0' }} value="BAJA">Baja</option>
             </select>
 
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
@@ -698,6 +871,26 @@ export default function TicketsPage() {
                 Reset
               </button>
             )}
+
+            {/* Toggle solo activos */}
+            <button
+              onClick={() => setSoloActivos(p => !p)}
+              title={soloActivos ? 'Mostrando solo tickets activos — clic para ver todos' : 'Mostrando todos los tickets — clic para ocultar resueltos'}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 5,
+                padding: '0.38rem 0.75rem',
+                marginLeft: 'auto',
+                background: soloActivos ? 'rgba(34,197,94,0.1)' : 'rgba(255,255,255,0.04)',
+                border: `1px solid ${soloActivos ? 'rgba(34,197,94,0.3)' : 'rgba(255,255,255,0.1)'}`,
+                borderRadius: '7px',
+                color: soloActivos ? '#4ade80' : '#475569',
+                fontSize: '0.75rem', cursor: 'pointer',
+                transition: 'all 0.15s',
+              }}
+            >
+              {soloActivos ? <EyeOff size={12} /> : <Eye size={12} />}
+              {soloActivos ? 'Solo activos' : 'Ver todos'}
+            </button>
           </div>
         </div>
 
@@ -715,6 +908,7 @@ export default function TicketsPage() {
                     <th>Prioridad</th>
                     {['ADMIN','TECNICO','PASANTE'].includes(userRol) && <th>Solicitante</th>}
                     <th>Técnico</th>
+                    <th>SLA</th>
                     <th>Fecha</th>
                   </tr>
                 </thead>
@@ -734,7 +928,7 @@ export default function TicketsPage() {
                           <Star size={10} fill="#fbbf24" color="#fbbf24" style={{ marginLeft: 4, verticalAlign: 'middle' }} />
                         )}
                       </td>
-                      <td className={styles.tituloCell}>{ticket.TITULO}</td>
+                      <td className={styles.titulo}>{ticket.TITULO}</td>
                       <td>
                         <span className={`${styles.badge} ${ESTADO_MOD[ticket.ESTADO] ?? styles.badgeGray}`}>
                           {ticket.ESTADO}
@@ -753,14 +947,17 @@ export default function TicketsPage() {
                       <td style={{ color: ticket.NOMBRE_TECNICO ? '#94a3b8' : '#334155', fontSize: '0.78rem' }}>
                         {ticket.NOMBRE_TECNICO ?? '—'}
                       </td>
+                      <td style={{ whiteSpace: 'nowrap' }}>
+                        <SlaTag fechaSla={ticket.FECHA_SLA} slaVencido={ticket.SLA_VENCIDO} estado={ticket.ESTADO} />
+                      </td>
                       <td className={styles.fecha}>
-                        {new Date(ticket.FECHA_CREACION).toLocaleDateString('es-EC')}
+                        {fmtDate(ticket.FECHA_CREACION)}
                       </td>
                     </tr>
                   ))}
                   {tickets.length === 0 && (
                     <tr>
-                      <td colSpan={['ADMIN','TECNICO','PASANTE'].includes(userRol) ? 7 : 6} className={styles.emptyState}>
+                      <td colSpan={['ADMIN','TECNICO','PASANTE'].includes(userRol) ? 8 : 7} className={styles.emptyState}>
                         {debouncedSearch || filterEstado || filterPrioridad || filterDesde || filterHasta
                           ? 'Sin resultados con los filtros aplicados.'
                           : 'No hay tickets registrados.'}
@@ -856,26 +1053,27 @@ export default function TicketsPage() {
                     value={formData.prioridad}
                     onChange={e => setFormData({ ...formData, prioridad: e.target.value })}
                   >
-                    <option value="BAJA">Baja</option>
-                    <option value="MEDIA">Media</option>
-                    <option value="ALTA">Alta</option>
+                    <option style={{ background: '#111318', color: '#e2e8f0' }} value="BAJA">Baja</option>
+                    <option style={{ background: '#111318', color: '#e2e8f0' }} value="MEDIA">Media</option>
+                    <option style={{ background: '#111318', color: '#e2e8f0' }} value="ALTA">Alta</option>
                   </select>
                 </div>
                 <div className={styles.field}>
                   <label className={styles.label}>Categoría</label>
                   <select
                     className={styles.select}
+                    style={{ background: '#111318', color: '#e2e8f0' }}
                     value={formData.id_categoria}
                     onChange={e => setFormData({ ...formData, id_categoria: parseInt(e.target.value) })}
                   >
                     {categorias.length > 0 ? (
                       categorias.map(cat => (
-                        <option key={cat.ID_CATEGORIA} value={cat.ID_CATEGORIA}>
+                        <option key={cat.ID_CATEGORIA} value={cat.ID_CATEGORIA} style={{ background: '#111318', color: '#e2e8f0' }}>
                           {cat.NOMBRE}
                         </option>
                       ))
                     ) : (
-                      <option value="0">Cargando categorías...</option>
+                      <option style={{ background: '#111318', color: '#e2e8f0' }} value="0">Cargando categorías...</option>
                     )}
                   </select>
                 </div>
@@ -992,20 +1190,79 @@ export default function TicketsPage() {
                 <div>
                   <span className={styles.detailSectionLabel}>Creado</span>
                   <span style={{ fontSize: '0.72rem', color: '#475569' }}>
-                    {new Date(selectedTicket.FECHA_CREACION).toLocaleString('es-EC', { timeZone: 'America/Guayaquil' })}
+                    {fmtDateTime(selectedTicket.FECHA_CREACION)}
                   </span>
                 </div>
               </div>
 
               {/* SLA countdown */}
-              {selectedTicket.FECHA_SLA && (
-                <div className={styles.detailSection}>
+              <div className={styles.detailSection}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <span className={styles.detailSectionLabel}>
                     <Timer size={12} style={{ display: 'inline', marginRight: 4 }} />SLA
                   </span>
-                  <SlaCountdown fechaSla={selectedTicket.FECHA_SLA} slaVencido={selectedTicket.SLA_VENCIDO} />
+                  {['ADMIN', 'TECNICO'].includes(userRol) && !['RESUELTO', 'CERRADO'].includes(selectedTicket.ESTADO) && (
+                    <button
+                      onClick={() => {
+                        setEditingSla(e => !e);
+                        setNewSlaDate(selectedTicket.FECHA_SLA ? selectedTicket.FECHA_SLA.substring(0, 16) : '');
+                      }}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 4,
+                        background: editingSla ? 'rgba(96,165,250,0.12)' : 'rgba(255,255,255,0.04)',
+                        border: `1px solid ${editingSla ? 'rgba(96,165,250,0.3)' : 'rgba(255,255,255,0.1)'}`,
+                        borderRadius: '6px', color: editingSla ? '#60a5fa' : '#475569',
+                        fontSize: '0.7rem', cursor: 'pointer', padding: '2px 8px',
+                      }}
+                    >
+                      <Pencil size={11} />
+                      {editingSla ? 'Cancelar' : 'Editar'}
+                    </button>
+                  )}
                 </div>
-              )}
+
+                {editingSla ? (
+                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginTop: '0.5rem', flexWrap: 'wrap' }}>
+                    <input
+                      type="datetime-local"
+                      value={newSlaDate}
+                      onChange={e => setNewSlaDate(e.target.value)}
+                      style={{
+                        flex: 1, minWidth: 200,
+                        padding: '0.45rem 0.65rem',
+                        background: '#0d0f14',
+                        border: '1px solid rgba(96,165,250,0.3)',
+                        borderRadius: '7px', color: '#e2e8f0',
+                        fontSize: '0.82rem', colorScheme: 'dark',
+                      }}
+                    />
+                    <button
+                      onClick={handleSaveSla}
+                      disabled={savingSla || !newSlaDate}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 4,
+                        padding: '0.45rem 0.9rem',
+                        background: 'rgba(52,211,153,0.12)',
+                        border: '1px solid rgba(52,211,153,0.3)',
+                        borderRadius: '7px', color: '#34d399',
+                        fontSize: '0.8rem', cursor: savingSla ? 'not-allowed' : 'pointer',
+                        opacity: savingSla ? 0.6 : 1,
+                      }}
+                    >
+                      {savingSla ? <Loader2 size={13} className={styles.spin} /> : <Check size={13} />}
+                      Guardar
+                    </button>
+                  </div>
+                ) : (
+                  selectedTicket.FECHA_SLA && (
+                    <SlaCountdown fechaSla={selectedTicket.FECHA_SLA} slaVencido={selectedTicket.SLA_VENCIDO} />
+                  )
+                )}
+
+                {!selectedTicket.FECHA_SLA && !editingSla && (
+                  <span style={{ fontSize: '0.75rem', color: '#334155', fontStyle: 'italic' }}>Sin fecha límite asignada</span>
+                )}
+              </div>
 
               {/* ── Asignación técnico (solo ADMIN) ── */}
               {userRol === 'ADMIN' && (
@@ -1020,14 +1277,14 @@ export default function TicketsPage() {
                       onChange={e => setTecnicoSel(e.target.value)}
                       style={{
                         flex: 1, padding: '0.45rem 0.7rem',
-                        background: 'rgba(255,255,255,0.04)',
+                        background: '#111318',
                         border: '1px solid rgba(255,255,255,0.1)',
                         borderRadius: '7px', color: '#e2e8f0', fontSize: '0.82rem',
                       }}
                     >
-                      <option value="">— Sin asignar —</option>
+                      <option style={{ background: '#111318', color: '#e2e8f0' }} value="">— Sin asignar —</option>
                       {tecnicos.map(t => (
-                        <option key={t.ID_USUARIO} value={t.ID_USUARIO}>
+                        <option key={t.ID_USUARIO} value={t.ID_USUARIO} style={{ background: '#111318', color: '#e2e8f0' }}>
                           {t.NOMBRE} ({t.ROL})
                         </option>
                       ))}
@@ -1079,10 +1336,10 @@ export default function TicketsPage() {
                     <p className={styles.emptyComments}>Sin comentarios registrados.</p>
                   ) : (
                     <div className={styles.commentList}>
-                      {comentarios.map((c, i) => {
+                      {comentarios.map((c) => {
                         const isInternal = c.ES_INTERNO === 1;
                         return (
-                          <div key={i} className={styles.commentItem} style={{
+                          <div key={c.ID_COMENTARIO} className={styles.commentItem} style={{
                             background: isInternal ? 'rgba(167,139,250,0.06)' : undefined,
                             border: isInternal ? '1px solid rgba(167,139,250,0.2)' : undefined,
                             borderRadius: isInternal ? 8 : undefined,
@@ -1093,7 +1350,7 @@ export default function TicketsPage() {
                                 {c.NOMBRE_AUTOR} · <span style={{ color: isInternal ? '#a78bfa' : undefined }}>{c.ROL_AUTOR}</span>
                                 {isInternal && <span style={{ fontSize: '0.65rem', color: '#a78bfa', background: 'rgba(167,139,250,0.15)', padding: '1px 6px', borderRadius: 10 }}>Nota interna</span>}
                               </span>
-                              <span>{new Date(c.FECHA_CREACION).toLocaleString('es-EC', { timeZone: 'America/Guayaquil' })}</span>
+                              <span>{fmtDateTime(c.FECHA_CREACION)}</span>
                             </div>
                             <p className={styles.commentText}>{c.TEXTO}</p>
                           </div>
@@ -1111,11 +1368,11 @@ export default function TicketsPage() {
                     <p className={styles.emptyComments}>Sin historial registrado aún.</p>
                   ) : (
                     <div className={styles.commentList}>
-                      {historial.map((h, i) => (
-                        <div key={i} className={styles.commentItem}>
+                      {historial.map((h) => (
+                        <div key={h.ID_HISTORIAL} className={styles.commentItem}>
                           <div className={styles.commentMeta}>
                             <span style={{ color: '#34d399', fontWeight: 600 }}>{h.ACCION}</span>
-                            <span>{new Date(h.FECHA).toLocaleString('es-EC', { timeZone: 'America/Guayaquil' })}</span>
+                            <span>{fmtDateTime(h.FECHA)}</span>
                           </div>
                           <p className={styles.commentText}>
                             {h.DETALLE}
@@ -1155,7 +1412,7 @@ export default function TicketsPage() {
                                 {a.NOMBRE_ORIGINAL}
                               </p>
                               <p style={{ margin: 0, color: '#475569', fontSize: '0.7rem' }}>
-                                {fileSizeLabel(a.TAMANIO)} · {a.SUBIDO_POR} · {new Date(a.FECHA_SUBIDA).toLocaleDateString('es-EC')}
+                                {fileSizeLabel(a.TAMANIO)} · {a.SUBIDO_POR} · {fmtDate(a.FECHA_SUBIDA)}
                               </p>
                             </div>
                             <a
@@ -1281,8 +1538,30 @@ export default function TicketsPage() {
                 <div>
                   <div className={styles.resolvedBanner}>
                     <CheckCircle2 size={16} />
-                    Este ticket ha sido resuelto.
+                    {selectedTicket.ESTADO === 'CERRADO' ? 'Este ticket ha sido cerrado.' : 'Este ticket ha sido resuelto.'}
                   </div>
+
+                  {/* Reabrir: solo el solicitante puede reabrir tickets CERRADOS */}
+                  {selectedTicket.ESTADO === 'CERRADO' && userId && selectedTicket.ID_USUARIO === userId && (
+                    <div style={{ marginTop: '0.75rem' }}>
+                      <button
+                        onClick={handleReabrir}
+                        disabled={reabriendo}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 6,
+                          padding: '0.5rem 1.1rem',
+                          background: 'rgba(167,139,250,0.08)',
+                          border: '1px solid rgba(167,139,250,0.25)',
+                          borderRadius: '8px', color: '#a78bfa',
+                          fontSize: '0.82rem', cursor: reabriendo ? 'not-allowed' : 'pointer',
+                          opacity: reabriendo ? 0.6 : 1,
+                        }}
+                      >
+                        {reabriendo ? <Loader2 size={13} className={styles.spin} /> : <RotateCcw size={13} />}
+                        Reabrir ticket
+                      </button>
+                    </div>
+                  )}
 
                   {/* CSAT: solo el creador puede calificar tickets RESUELTOS */}
                   {selectedTicket.ESTADO === 'RESUELTO' && userId && selectedTicket.ID_USUARIO === userId && (

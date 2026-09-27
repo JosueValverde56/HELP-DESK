@@ -4,24 +4,27 @@ import { useSession } from 'next-auth/react';
 import {
   Loader2, UserPlus, ShieldAlert, CheckCircle2, Clock,
   Pencil, Trash2, KeyRound, X, Search, Users, Eye, EyeOff,
-  Mail, MessageCircle,
+  Mail,
 } from 'lucide-react';
 import { usuariosService } from '@/src/services/usuarios.service';
+import { departamentosService, Departamento } from '@/src/services/departamentos.service';
 import { useToast } from '@/src/components/Toast';
 import styles from './usuarios.module.css';
 
 const GYE = 'America/Guayaquil';
 
 interface Usuario {
-  ID_USUARIO:      number;
-  NOMBRE:          string;
-  EMAIL:           string;
-  ROL:             string;
-  ESTADO:          string;
-  FECHA_CREACION:  string;
-  TELEFONO:        string | null;
-  NOTIF_EMAIL:     number;
-  NOTIF_WHATSAPP:  number;
+  ID_USUARIO:           number;
+  NOMBRE:               string;
+  EMAIL:                string;
+  ROL:                  string;
+  ESTADO:               string;
+  FECHA_CREACION:       string;
+  TELEFONO:             string | null;
+  NOTIF_EMAIL:          number;
+  NOTIF_WHATSAPP?:      number;
+  ID_DEPARTAMENTO:      number | null;
+  NOMBRE_DEPARTAMENTO:  string | null;
 }
 
 const ROL_BADGE: Record<string, { color: string; bg: string }> = {
@@ -49,6 +52,13 @@ const INPUT_STYLE: React.CSSProperties = {
 
 const SELECT_STYLE: React.CSSProperties = {
   ...INPUT_STYLE, cursor: 'pointer',
+  backgroundColor: '#111318',
+  color: '#e2e8f0',
+};
+
+const OPTION_STYLE: React.CSSProperties = {
+  background: '#111318',
+  color: '#e2e8f0',
 };
 
 const BTN_GHOST: React.CSSProperties = {
@@ -103,39 +113,27 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 // ── Toggle de notificaciones ──────────────────────────────────────────────────
-function NotifToggle({ email, whatsapp, onEmail, onWhatsapp }: {
-  email: boolean; whatsapp: boolean;
-  onEmail: (v: boolean) => void; onWhatsapp: (v: boolean) => void;
-}) {
-  const toggle = (active: boolean, onChange: (v: boolean) => void) => (
-    <button type="button" onClick={() => onChange(!active)} style={{
-      display: 'flex', alignItems: 'center', gap: 7,
-      padding: '0.4rem 0.75rem',
-      background: active ? 'rgba(52,211,153,0.1)' : 'rgba(255,255,255,0.04)',
-      border: `1px solid ${active ? 'rgba(52,211,153,0.3)' : 'rgba(255,255,255,0.09)'}`,
-      borderRadius: '7px', cursor: 'pointer', fontSize: '0.78rem',
-      color: active ? '#34d399' : '#475569', transition: 'all 0.15s',
-    }}>
-      <span style={{ width: 28, height: 16, background: active ? '#34d399' : '#334155', borderRadius: 999, position: 'relative', display: 'inline-block', flexShrink: 0, transition: 'background 0.2s' }}>
-        <span style={{ position: 'absolute', top: 2, left: active ? 14 : 2, width: 12, height: 12, background: '#fff', borderRadius: '50%', transition: 'left 0.2s' }} />
-      </span>
-      {active ? 'Activado' : 'Desactivado'}
-    </button>
-  );
+function NotifToggle({ email, onEmail }: { email: boolean; onEmail: (v: boolean) => void }) {
   return (
     <div style={{ marginBottom: '0.9rem' }}>
       <label style={{ display: 'block', color: '#64748b', fontSize: '0.72rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>
         Notificaciones
       </label>
-      <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ color: '#94a3b8', fontSize: '0.78rem' }}>📧 Email</span>
-          {toggle(email, onEmail)}
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ color: '#94a3b8', fontSize: '0.78rem' }}>💬 WhatsApp</span>
-          {toggle(whatsapp, onWhatsapp)}
-        </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ color: '#94a3b8', fontSize: '0.78rem' }}>📧 Email</span>
+        <button type="button" onClick={() => onEmail(!email)} style={{
+          display: 'flex', alignItems: 'center', gap: 7,
+          padding: '0.4rem 0.75rem',
+          background: email ? 'rgba(52,211,153,0.1)' : 'rgba(255,255,255,0.04)',
+          border: `1px solid ${email ? 'rgba(52,211,153,0.3)' : 'rgba(255,255,255,0.09)'}`,
+          borderRadius: '7px', cursor: 'pointer', fontSize: '0.78rem',
+          color: email ? '#34d399' : '#475569', transition: 'all 0.15s',
+        }}>
+          <span style={{ width: 28, height: 16, background: email ? '#34d399' : '#334155', borderRadius: 999, position: 'relative', display: 'inline-block', flexShrink: 0, transition: 'background 0.2s' }}>
+            <span style={{ position: 'absolute', top: 2, left: email ? 14 : 2, width: 12, height: 12, background: '#fff', borderRadius: '50%', transition: 'left 0.2s' }} />
+          </span>
+          {email ? 'Activado' : 'Desactivado'}
+        </button>
       </div>
     </div>
   );
@@ -146,9 +144,10 @@ export default function UsuariosPage() {
   const { data: session, status } = useSession();
   const { toast } = useToast();
 
-  const [usuarios, setUsuarios]       = useState<Usuario[]>([]);
-  const [loadingU, setLoadingU]       = useState(true);
-  const [search, setSearch]           = useState('');
+  const [usuarios, setUsuarios]           = useState<Usuario[]>([]);
+  const [departamentos, setDepartamentos] = useState<Departamento[]>([]);
+  const [loadingU, setLoadingU]           = useState(true);
+  const [search, setSearch]               = useState('');
 
   // ── Modals state ──────────────────────────────────────────────────────────
   const [createOpen, setCreateOpen]   = useState(false);
@@ -160,18 +159,17 @@ export default function UsuariosPage() {
   const [saving, setSaving]           = useState(false);
   const [deleting, setDeleting]       = useState(false);
   const [testingEmail, setTestingEmail]   = useState(false);
-  const [testingWA, setTestingWA]         = useState(false);
 
   // ── Formulario crear ──────────────────────────────────────────────────────
   const [createForm, setCreateForm] = useState({
     nombre: '', email: '', password: '', rol: 'USUARIO',
-    telefono: '', notif_email: 1, notif_whatsapp: 0,
+    telefono: '', notif_email: 1, id_departamento: null as number | null,
   });
 
   // ── Formulario editar ─────────────────────────────────────────────────────
   const [editForm, setEditForm] = useState({
     nombre: '', email: '', rol: '', estado: '',
-    telefono: '', notif_email: 1, notif_whatsapp: 0,
+    telefono: '', notif_email: 1, id_departamento: null as number | null,
   });
 
   // ── Formulario reset password ─────────────────────────────────────────────
@@ -182,10 +180,14 @@ export default function UsuariosPage() {
   const cargar = async () => {
     setLoadingU(true);
     try {
-      const data = await usuariosService.getAll();
-      setUsuarios(data);
+      const [dataU, dataD] = await Promise.all([
+        usuariosService.getAll(),
+        departamentosService.getAll(),
+      ]);
+      setUsuarios(dataU);
+      setDepartamentos(dataD);
     } catch {
-      toast('Error al cargar los usuarios', 'error');
+      toast('Error al cargar los datos', 'error');
     } finally {
       setLoadingU(false);
     }
@@ -212,7 +214,8 @@ export default function UsuariosPage() {
   const filtrados = usuarios.filter(u =>
     u.NOMBRE.toLowerCase().includes(term) ||
     u.EMAIL.toLowerCase().includes(term)  ||
-    u.ROL.toLowerCase().includes(term)
+    u.ROL.toLowerCase().includes(term)    ||
+    (u.NOMBRE_DEPARTAMENTO ?? '').toLowerCase().includes(term)
   );
 
   // ── Stats rápidas ─────────────────────────────────────────────────────────
@@ -237,18 +240,6 @@ export default function UsuariosPage() {
     }
   };
 
-  const handleTestWhatsApp = async () => {
-    setTestingWA(true);
-    try {
-      const res = await usuariosService.testWhatsApp();
-      toast(res.mensaje ?? 'WhatsApp de prueba enviado — revisa tu teléfono', 'success');
-    } catch (err: any) {
-      const msg = err.response?.data?.error ?? 'Error al enviar WhatsApp de prueba';
-      toast(msg, 'error');
-    } finally {
-      setTestingWA(false);
-    }
-  };
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -262,7 +253,7 @@ export default function UsuariosPage() {
         : `Usuario creado. Se envió email de bienvenida con credenciales a ${emailCreado}.`;
       toast(msg, 'success');
       setCreateOpen(false);
-      setCreateForm({ nombre: '', email: '', password: '', rol: 'USUARIO', telefono: '', notif_email: 1, notif_whatsapp: 0 });
+      setCreateForm({ nombre: '', email: '', password: '', rol: 'USUARIO', telefono: '', notif_email: 1, id_departamento: null });
       cargar();
     } catch (err: any) {
       toast(err.response?.data?.error || 'Error al crear el usuario', 'error');
@@ -276,7 +267,7 @@ export default function UsuariosPage() {
       nombre: u.NOMBRE, email: u.EMAIL, rol: u.ROL, estado: u.ESTADO,
       telefono: u.TELEFONO ?? '',
       notif_email: u.NOTIF_EMAIL ?? 1,
-      notif_whatsapp: u.NOTIF_WHATSAPP ?? 0,
+      id_departamento: u.ID_DEPARTAMENTO ?? null,
     });
     setEditTarget(u);
   };
@@ -439,21 +430,6 @@ export default function UsuariosPage() {
           Probar email
         </button>
         <button
-          onClick={handleTestWhatsApp}
-          disabled={testingWA}
-          title="Envía un WhatsApp de prueba a tu teléfono (configura tu número en Mi Perfil primero)"
-          style={{
-            ...BTN_GHOST,
-            display: 'flex', alignItems: 'center', gap: 6,
-            whiteSpace: 'nowrap',
-            color: testingWA ? '#334155' : '#34d399',
-            borderColor: testingWA ? 'rgba(255,255,255,0.09)' : 'rgba(52,211,153,0.25)',
-          }}
-        >
-          {testingWA ? <Loader2 size={14} className={styles.spin} /> : <MessageCircle size={14} />}
-          Probar WhatsApp
-        </button>
-        <button
           onClick={() => setCreateOpen(true)}
           className={styles.btnPrimary}
           style={{ whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: 6 }}
@@ -489,13 +465,14 @@ export default function UsuariosPage() {
               <thead>
                 <tr style={{ background: 'rgba(255,255,255,0.03)' }}>
                   {[
-                    { label: 'Nombre',     w: '18%' },
-                    { label: 'Email',      w: '24%' },
-                    { label: 'Rol',        w: '10%' },
-                    { label: 'Estado',     w: '10%' },
-                    { label: 'Notif.',     w: '8%'  },
-                    { label: 'Registrado', w: '10%' },
-                    { label: 'Acciones',   w: '20%' },
+                    { label: 'Nombre',        w: '16%' },
+                    { label: 'Email',         w: '20%' },
+                    { label: 'Departamento',  w: '18%' },
+                    { label: 'Rol',           w: '9%'  },
+                    { label: 'Estado',        w: '9%'  },
+                    { label: 'Notif.',        w: '7%'  },
+                    { label: 'Registrado',    w: '9%'  },
+                    { label: 'Acciones',      w: '12%' },
                   ].map(h => (
                     <th key={h.label} style={{
                       width: h.w, padding: '0.75rem 1rem',
@@ -540,6 +517,22 @@ export default function UsuariosPage() {
                         </span>
                       </td>
 
+                      {/* Departamento */}
+                      <td style={{ padding: '0.8rem 1rem', maxWidth: 0 }}>
+                        {u.NOMBRE_DEPARTAMENTO
+                          ? (
+                            <span title={u.NOMBRE_DEPARTAMENTO} style={{
+                              color: '#94a3b8', display: 'block',
+                              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                              fontSize: '0.78rem',
+                            }}>
+                              {u.NOMBRE_DEPARTAMENTO}
+                            </span>
+                          )
+                          : <span style={{ color: '#334155', fontStyle: 'italic', fontSize: '0.75rem' }}>Sin asignar</span>
+                        }
+                      </td>
+
                       {/* Rol */}
                       <td style={{ padding: '0.8rem 1rem', whiteSpace: 'nowrap' }}>
                         <span style={{ padding: '3px 10px', borderRadius: '999px', fontSize: '0.71rem', fontWeight: 600, color: rolBadge.color, background: rolBadge.bg }}>
@@ -563,18 +556,7 @@ export default function UsuariosPage() {
                               📧
                             </span>
                           )}
-                          {u.NOTIF_WHATSAPP === 1 && u.TELEFONO ? (
-                            <span title={`WhatsApp: ${u.TELEFONO}`}
-                              style={{ fontSize: '0.75rem', background: 'rgba(52,211,153,0.1)', border: '1px solid rgba(52,211,153,0.2)', borderRadius: '6px', padding: '2px 6px' }}>
-                              💬
-                            </span>
-                          ) : u.NOTIF_WHATSAPP === 1 ? (
-                            <span title="WhatsApp activado — falta número"
-                              style={{ fontSize: '0.75rem', background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.25)', borderRadius: '6px', padding: '2px 6px' }}>
-                              💬⚠️
-                            </span>
-                          ) : null}
-                          {u.NOTIF_EMAIL !== 1 && u.NOTIF_WHATSAPP !== 1 && (
+                          {u.NOTIF_EMAIL !== 1 && (
                             <span style={{ color: '#334155', fontSize: '0.72rem' }}>—</span>
                           )}
                         </div>
@@ -656,33 +638,29 @@ export default function UsuariosPage() {
               <select style={SELECT_STYLE} value={createForm.rol}
                 onChange={e => setCreateForm(p => ({ ...p, rol: e.target.value }))}
               >
-                <option value="USUARIO">USUARIO — Gestiona sus propios tickets</option>
-                <option value="TECNICO">TÉCNICO — Resuelve tickets</option>
-                <option value="PASANTE">PASANTE — Acceso supervisado (requiere aprobación)</option>
-                <option value="ADMIN">ADMINISTRADOR — Control total</option>
+                <option value="USUARIO" style={OPTION_STYLE}>USUARIO — Gestiona sus propios tickets</option>
+                <option value="TECNICO" style={OPTION_STYLE}>TÉCNICO — Resuelve tickets</option>
+                <option value="PASANTE" style={OPTION_STYLE}>PASANTE — Acceso supervisado (requiere aprobación)</option>
+                <option value="ADMIN" style={OPTION_STYLE}>ADMINISTRADOR — Control total</option>
               </select>
             </Field>
-            <div style={{ background: 'rgba(52,211,153,0.05)', border: '1px solid rgba(52,211,153,0.2)', borderRadius: '10px', padding: '0.85rem', marginBottom: '0.9rem' }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#34d399', fontSize: '0.72rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.45rem' }}>
-                💬 Número de WhatsApp
-                <span style={{ color: '#64748b', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>(con código de país)</span>
-              </label>
-              <input type="tel" style={{ ...INPUT_STYLE, borderColor: createForm.notif_whatsapp === 1 ? 'rgba(52,211,153,0.35)' : 'rgba(255,255,255,0.1)' }}
-                placeholder="+593 99 912 3456"
-                value={createForm.telefono}
-                onChange={e => setCreateForm(p => ({ ...p, telefono: e.target.value }))}
-              />
-              {createForm.notif_whatsapp === 1 && !createForm.telefono && (
-                <p style={{ color: '#fbbf24', fontSize: '0.72rem', margin: '0.35rem 0 0', display: 'flex', alignItems: 'center', gap: 4 }}>
-                  ⚠️ WhatsApp activado — ingresa un número para recibir mensajes
-                </p>
-              )}
-            </div>
+            <Field label="Departamento (opcional)">
+              <select
+                style={SELECT_STYLE}
+                value={createForm.id_departamento ?? ''}
+                onChange={e => setCreateForm(p => ({ ...p, id_departamento: e.target.value ? Number(e.target.value) : null }))}
+              >
+                <option value="" style={OPTION_STYLE}>Sin departamento</option>
+                {departamentos.filter(d => d.ESTADO === 'ACTIVO').map(d => (
+                  <option key={d.ID_DEPARTAMENTO} value={d.ID_DEPARTAMENTO} style={OPTION_STYLE}>
+                    {d.NOMBRE}
+                  </option>
+                ))}
+              </select>
+            </Field>
             <NotifToggle
               email={createForm.notif_email === 1}
-              whatsapp={createForm.notif_whatsapp === 1}
-              onEmail={v    => setCreateForm(p => ({ ...p, notif_email:    v ? 1 : 0 }))}
-              onWhatsapp={v => setCreateForm(p => ({ ...p, notif_whatsapp: v ? 1 : 0 }))}
+              onEmail={v => setCreateForm(p => ({ ...p, notif_email: v ? 1 : 0 }))}
             />
             <div style={{ background: 'rgba(96,165,250,0.06)', border: '1px solid rgba(96,165,250,0.2)', borderRadius: '8px', padding: '0.6rem 0.85rem', marginBottom: '0.9rem', display: 'flex', alignItems: 'flex-start', gap: 8 }}>
               <span style={{ fontSize: '0.85rem', flexShrink: 0 }}>📨</span>
@@ -724,43 +702,39 @@ export default function UsuariosPage() {
                 <select style={SELECT_STYLE} value={editForm.rol}
                   onChange={e => setEditForm(p => ({ ...p, rol: e.target.value }))}
                 >
-                  <option value="USUARIO">USUARIO</option>
-                  <option value="TECNICO">TÉCNICO</option>
-                  <option value="PASANTE">PASANTE</option>
-                  <option value="ADMIN">ADMIN</option>
+                  <option value="USUARIO" style={OPTION_STYLE}>USUARIO</option>
+                  <option value="TECNICO" style={OPTION_STYLE}>TÉCNICO</option>
+                  <option value="PASANTE" style={OPTION_STYLE}>PASANTE</option>
+                  <option value="ADMIN"   style={OPTION_STYLE}>ADMIN</option>
                 </select>
               </Field>
               <Field label="Estado">
                 <select style={SELECT_STYLE} value={editForm.estado}
                   onChange={e => setEditForm(p => ({ ...p, estado: e.target.value }))}
                 >
-                  <option value="ACTIVO">Activo</option>
-                  <option value="PENDIENTE">Pendiente</option>
-                  <option value="INACTIVO">Inactivo</option>
+                  <option value="ACTIVO"   style={OPTION_STYLE}>Activo</option>
+                  <option value="PENDIENTE" style={OPTION_STYLE}>Pendiente</option>
+                  <option value="INACTIVO" style={OPTION_STYLE}>Inactivo</option>
                 </select>
               </Field>
             </div>
-            <div style={{ background: 'rgba(52,211,153,0.05)', border: '1px solid rgba(52,211,153,0.2)', borderRadius: '10px', padding: '0.85rem', marginBottom: '0.9rem' }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#34d399', fontSize: '0.72rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.45rem' }}>
-                💬 Número de WhatsApp
-                <span style={{ color: '#64748b', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>(con código de país)</span>
-              </label>
-              <input type="tel" style={{ ...INPUT_STYLE, borderColor: editForm.notif_whatsapp === 1 ? 'rgba(52,211,153,0.35)' : 'rgba(255,255,255,0.1)' }}
-                placeholder="+593 99 912 3456"
-                value={editForm.telefono}
-                onChange={e => setEditForm(p => ({ ...p, telefono: e.target.value }))}
-              />
-              {editForm.notif_whatsapp === 1 && !editForm.telefono && (
-                <p style={{ color: '#fbbf24', fontSize: '0.72rem', margin: '0.35rem 0 0', display: 'flex', alignItems: 'center', gap: 4 }}>
-                  ⚠️ WhatsApp activado — ingresa un número para recibir mensajes
-                </p>
-              )}
-            </div>
+            <Field label="Departamento">
+              <select
+                style={SELECT_STYLE}
+                value={editForm.id_departamento ?? ''}
+                onChange={e => setEditForm(p => ({ ...p, id_departamento: e.target.value ? Number(e.target.value) : null }))}
+              >
+                <option value="" style={OPTION_STYLE}>Sin departamento</option>
+                {departamentos.filter(d => d.ESTADO === 'ACTIVO').map(d => (
+                  <option key={d.ID_DEPARTAMENTO} value={d.ID_DEPARTAMENTO} style={OPTION_STYLE}>
+                    {d.NOMBRE}
+                  </option>
+                ))}
+              </select>
+            </Field>
             <NotifToggle
               email={editForm.notif_email === 1}
-              whatsapp={editForm.notif_whatsapp === 1}
-              onEmail={v    => setEditForm(p => ({ ...p, notif_email:    v ? 1 : 0 }))}
-              onWhatsapp={v => setEditForm(p => ({ ...p, notif_whatsapp: v ? 1 : 0 }))}
+              onEmail={v => setEditForm(p => ({ ...p, notif_email: v ? 1 : 0 }))}
             />
             <div style={{ display: 'flex', gap: '0.6rem', justifyContent: 'flex-end', marginTop: '1rem' }}>
               <button type="button" onClick={() => setEditTarget(null)} style={BTN_GHOST}>Cancelar</button>

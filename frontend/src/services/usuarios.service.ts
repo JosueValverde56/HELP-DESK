@@ -7,6 +7,8 @@ export const usuariosService = {
     password: string;
     rol: string;
     estado?: string;
+    notif_email?: number;
+    id_departamento?: number | null;
   }) => {
     const response = await api.post('/usuarios/crear', userData);
     return response.data;
@@ -27,6 +29,8 @@ export const usuariosService = {
     email?: string;
     rol?: string;
     estado?: string;
+    notif_email?: number;
+    id_departamento?: number | null;
   }) => {
     const response = await api.put(`/usuarios/${idUsuario}`, data);
     return response.data;
@@ -59,7 +63,6 @@ export const usuariosService = {
     nombre?: string;
     telefono?: string | null;
     notif_email?: number;
-    notif_whatsapp?: number;
   }) => {
     const response = await api.put('/me/perfil', data);
     return response.data;
@@ -75,8 +78,4 @@ export const usuariosService = {
     return response.data;
   },
 
-  testWhatsApp: async () => {
-    const response = await api.post('/test-whatsapp');
-    return response.data;
-  },
 };

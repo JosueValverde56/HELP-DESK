@@ -5,6 +5,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { Eye, EyeOff, Shield, AlertCircle, Loader2 } from 'lucide-react';
 import { authService } from '@/src/services/auth.service'
 import styles from './page.module.css';
@@ -42,17 +43,10 @@ export default function LoginPage() {
       if (result?.ok) {
         router.push('/dashboard');
       } else {
-        const msg = result?.error ?? 'Credenciales inválidas';
-        setServerError(
-          msg === 'CredentialsSignin'
-            ? 'Correo o contraseña incorrectos'
-            : msg
-        );
+        setServerError('Correo electrónico o contraseña incorrectos');
       }
-    } catch (err: any) {
-      setServerError(
-        err.response?.data?.error || 'Error al conectar con el servidor'
-      );
+    } catch {
+      setServerError('No se pudo conectar con el servidor. Intenta de nuevo.');
     }
   };
 
@@ -155,6 +149,12 @@ export default function LoginPage() {
             )}
           </button>
         </form>
+
+        <div style={{ textAlign: 'center', marginTop: '0.75rem' }}>
+          <Link href="/forgot-password" style={{ color: '#60a5fa', fontSize: '0.78rem', textDecoration: 'none' }}>
+            ¿Olvidaste tu contraseña?
+          </Link>
+        </div>
 
         <p className={styles.footer}>
           Acceso monitorizado · Solo personal autorizado

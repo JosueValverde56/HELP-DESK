@@ -17,11 +17,9 @@ export const ticketsService = {
     q?: string;
     desde?: string;
     hasta?: string;
+    activos?: string;
   }): Promise<TicketsResponse> => {
     const response = await api.get('/tickets', { params });
-    if (Array.isArray(response.data)) {
-      return { tickets: response.data, totalItems: response.data.length, page: 1, limit: response.data.length, totalPages: 1 };
-    }
     return response.data;
   },
 
@@ -60,6 +58,11 @@ export const ticketsService = {
     return response.data;
   },
 
+  reabrir: async (id_ticket: number) => {
+    const response = await api.put(`/tickets/${id_ticket}/reabrir`);
+    return response.data;
+  },
+
   getAdjuntos: async (id_ticket: number) => {
     const response = await api.get(`/tickets/${id_ticket}/adjuntos`);
     return response.data;
@@ -74,7 +77,17 @@ export const ticketsService = {
     return response.data;
   },
 
+  updateSLA: async (id_ticket: number, fecha_sla: string) => {
+    const response = await api.put(`/tickets/${id_ticket}/sla`, { fecha_sla });
+    return response.data;
+  },
+
   getAdjuntoUrl: (id_adjunto: number) => {
     return `/api/adjuntos/${id_adjunto}`;
+  },
+
+  getTrend: async (): Promise<{ DIA: string; TOTAL: number }[]> => {
+    const response = await api.get('/tickets/trend');
+    return response.data;
   },
 };

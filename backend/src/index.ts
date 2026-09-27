@@ -12,13 +12,13 @@ import { Server as SocketServer } from 'socket.io';
 import swaggerUi from 'swagger-ui-express';
 import swaggerJsdoc from 'swagger-jsdoc';
 import { initializeDB } from './db/connection.js';
-import { login, cambiarPassword } from './controllers/auth.controller.js';
+import { login, cambiarPassword, forgotPassword, resetPassword } from './controllers/auth.controller.js';
 import { authenticate, authorize } from './middleware/auth.middleware.js';
 import { upload } from './middleware/upload.middleware.js';
 import {
   getTickets, createTicket, updateTicketStatus,
-  addComment, getCommentsByTicket, getTicketStats, asignarTicket,
-  calificarTicket, getAdjuntos,
+  addComment, getCommentsByTicket, getTicketStats, getTicketTrend, asignarTicket, reabrirTicket,
+  calificarTicket, getAdjuntos, updateSLA,
 } from './controllers/tickets.controller.js';
 import {
   crearUsuario, getUsuarios, aprobarPasante,
@@ -26,13 +26,20 @@ import {
 } from './controllers/usuarios.controller.js';
 import { getHistorialByTicket } from './controllers/historial.controller.js';
 import { getReporteGeneral } from './controllers/reportes.controller.js';
-import { getCategorias } from './controllers/categorias.controller.js';
+import { getCategorias, crearCategoria, editarCategoria, toggleCategoria } from './controllers/categorias.controller.js';
+import { getAnydesk, updateAnydesk, registrarConexionAnydesk, getAnydeskLogs } from './controllers/anydesk.controller.js';
+import { getSLAConfig, updateSLAConfig } from './controllers/sla.controller.js';
+import {
+  getDepartamentos, crearDepartamento, editarDepartamento, toggleDepartamento,
+} from './controllers/departamentos.controller.js';
 import { registerHistorialListeners } from './events/historialListener.js';
 import { getMePerfil, updateMePerfil, getMeStats } from './controllers/perfil.controller.js';
 import { startSLAMonitor } from './jobs/slaMonitor.js';
 import { subirAdjunto, descargarAdjunto } from './controllers/adjuntos.controller.js';
 import { ticketEmitter } from './events/ticketEvents.js';
-import { verificarConexionEmail, verificarConexionWhatsApp } from './services/notificaciones.service.js';
+import { verificarConexionEmail } from './services/notificaciones.service.js';
+import { getNotificaciones, marcarLeida, marcarTodasLeidas } from './controllers/notificaciones.controller.js';
+import { setIo } from './socket/socketInstance.js';
 
 dotenv.config();
 
@@ -54,7 +61,10 @@ export const io = new SocketServer(server, {
 io.on('connection', (socket) => {
   socket.on('join_ticket', (idTicket: number) => socket.join(`ticket:${idTicket}`));
   socket.on('leave_ticket', (idTicket: number) => socket.leave(`ticket:${idTicket}`));
+  socket.on('join_user',   (idUsuario: number) => socket.join(`user:${idUsuario}`));
 });
+
+setIo(io);
 
 // Bridge domain events → WebSocket rooms
 ticketEmitter.on('ticket.created', (data) => {
@@ -133,15 +143,41 @@ app.get('/api/me/perfil',  authenticate, getMePerfil);
 app.put('/api/me/perfil',  authenticate, updateMePerfil);
 app.get('/api/me/stats',   authenticate, getMeStats);
 
+// ── Auth extra (forgot / reset password) ────────────────────────────────────
+app.post('/api/auth/forgot-password', forgotPassword);
+app.post('/api/auth/reset-password',  resetPassword);
+
 // ── Categorías ────────────────────────────────────────────────────────────────
-app.get('/api/categorias', authenticate, getCategorias);
+app.get ('/api/categorias',                 authenticate,                    getCategorias);
+app.post('/api/categorias',                 authenticate, authorize('ADMIN'), crearCategoria);
+app.put ('/api/categorias/:id',             authenticate, authorize('ADMIN'), editarCategoria);
+app.put ('/api/categorias/:id/toggle',      authenticate, authorize('ADMIN'), toggleCategoria);
+
+// ── AnyDesk ───────────────────────────────────────────────────────────────────
+app.get ('/api/anydesk',          authenticate,                    getAnydesk);
+app.put ('/api/anydesk/:id',      authenticate, authorize('ADMIN'), updateAnydesk);
+app.post('/api/anydesk/:id/log',  authenticate,                    registrarConexionAnydesk);
+app.get ('/api/anydesk/logs',     authenticate, authorize('ADMIN'), getAnydeskLogs);
+
+// ── Configuración SLA ─────────────────────────────────────────────────────────
+app.get('/api/sla-config',  authenticate,                    getSLAConfig);
+app.put('/api/sla-config',  authenticate, authorize('ADMIN'), updateSLAConfig);
+
+// ── Departamentos ─────────────────────────────────────────────────────────────
+app.get   ('/api/departamentos',               authenticate,                    getDepartamentos);
+app.post  ('/api/departamentos',               authenticate, authorize('ADMIN'), crearDepartamento);
+app.put   ('/api/departamentos/:id',           authenticate, authorize('ADMIN'), editarDepartamento);
+app.put   ('/api/departamentos/:id/toggle',    authenticate, authorize('ADMIN'), toggleDepartamento);
 
 // ── Tickets ───────────────────────────────────────────────────────────────────
 app.get ('/api/tickets',                  authenticate, getTickets);
 app.post('/api/tickets',                  authenticate, createTicket);
 app.get ('/api/tickets/stats',            authenticate, getTicketStats);
+app.get ('/api/tickets/trend',            authenticate, getTicketTrend);
 app.put ('/api/tickets/:id/estado',       authenticate, authorize('ADMIN', 'TECNICO'), updateTicketStatus);
 app.put ('/api/tickets/:id/asignar',      authenticate, authorize('ADMIN', 'TECNICO'), asignarTicket);
+app.put ('/api/tickets/:id/sla',          authenticate, authorize('ADMIN', 'TECNICO'), updateSLA);
+app.put ('/api/tickets/:id/reabrir',      authenticate, reabrirTicket);
 app.put ('/api/tickets/:id/calificar',    authenticate, calificarTicket);
 app.post('/api/tickets/comentario',       authenticate, addComment);
 app.get ('/api/tickets/:id/comentarios',  authenticate, getCommentsByTicket);
@@ -166,29 +202,11 @@ app.post('/api/test-email', authenticate, authorize('ADMIN'), async (req: any, r
   }
 });
 
-// ── Test WhatsApp (solo ADMIN, requiere teléfono en el perfil) ────────────────
-app.post('/api/test-whatsapp', authenticate, authorize('ADMIN'), async (req: any, res) => {
-  const { enviarWhatsAppPrueba } = await import('./services/notificaciones.service.js');
-  let connection;
-  try {
-    connection = await oracledb.getConnection();
-    const row = await connection.execute(
-      `SELECT TELEFONO FROM HD_USUARIOS WHERE ID_USUARIO = :id`,
-      { id: req.user.idUsuario },
-      { outFormat: oracledb.OUT_FORMAT_OBJECT }
-    );
-    const telefono: string | null = (row.rows as any[])?.[0]?.TELEFONO ?? null;
-    if (!telefono) {
-      return res.status(400).json({ ok: false, error: 'No tienes teléfono configurado. Añádelo en tu perfil (Mi Perfil) antes de probar WhatsApp.' });
-    }
-    await enviarWhatsAppPrueba(telefono);
-    res.json({ ok: true, mensaje: `WhatsApp de prueba enviado a ${telefono}` });
-  } catch (err: any) {
-    res.status(500).json({ ok: false, error: err.message });
-  } finally {
-    if (connection) await connection.close();
-  }
-});
+
+// ── Notificaciones internas ───────────────────────────────────────────────────
+app.get('/api/notificaciones',           authenticate, getNotificaciones);
+app.put('/api/notificaciones/leer-todas', authenticate, marcarTodasLeidas);
+app.put('/api/notificaciones/:id/leer',  authenticate, marcarLeida);
 
 // ── Usuarios ──────────────────────────────────────────────────────────────────
 app.post  ('/api/usuarios/crear',               authenticate, authorize('ADMIN'), crearUsuario);
@@ -230,7 +248,6 @@ async function startServer() {
   registerHistorialListeners();
   startSLAMonitor();
   await verificarConexionEmail();
-  await verificarConexionWhatsApp();
 
   server.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'EADDRINUSE') {

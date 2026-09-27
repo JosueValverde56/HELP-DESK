@@ -6,24 +6,26 @@ import { AuthRequest } from '../middleware/auth.middleware.js';
 import { notificarBienvenida } from '../services/notificaciones.service.js';
 
 const CreateUsuarioSchema = z.object({
-  nombre:         z.string().min(2, 'El nombre debe tener al menos 2 caracteres').max(100),
-  email:          z.string().email('Email inválido'),
-  password:       z.string().min(8, 'La contraseña debe tener al menos 8 caracteres'),
-  rol:            z.enum(['ADMIN', 'TECNICO', 'USUARIO', 'PASANTE']),
-  estado:         z.enum(['ACTIVO', 'PENDIENTE']).default('ACTIVO'),
-  telefono:       z.string().max(20).optional().nullable(),
-  notif_email:    z.number().int().min(0).max(1).default(1),
-  notif_whatsapp: z.number().int().min(0).max(1).default(0),
+  nombre:          z.string().min(2, 'El nombre debe tener al menos 2 caracteres').max(100),
+  email:           z.string().email('Email inválido'),
+  password:        z.string().min(8, 'La contraseña debe tener al menos 8 caracteres'),
+  rol:             z.enum(['ADMIN', 'TECNICO', 'USUARIO', 'PASANTE']),
+  estado:          z.enum(['ACTIVO', 'PENDIENTE']).default('ACTIVO'),
+  telefono:        z.string().max(20).optional().nullable(),
+  notif_email:     z.number().int().min(0).max(1).default(1),
+  notif_whatsapp:  z.number().int().min(0).max(1).default(0),
+  id_departamento: z.number().int().positive().optional().nullable(),
 });
 
 const EditUsuarioSchema = z.object({
-  nombre:         z.string().min(2).max(100).optional(),
-  email:          z.string().email('Email inválido').optional(),
-  rol:            z.enum(['ADMIN', 'TECNICO', 'USUARIO', 'PASANTE']).optional(),
-  estado:         z.enum(['ACTIVO', 'PENDIENTE', 'INACTIVO']).optional(),
-  telefono:       z.string().max(20).optional().nullable(),
-  notif_email:    z.number().int().min(0).max(1).optional(),
-  notif_whatsapp: z.number().int().min(0).max(1).optional(),
+  nombre:          z.string().min(2).max(100).optional(),
+  email:           z.string().email('Email inválido').optional(),
+  rol:             z.enum(['ADMIN', 'TECNICO', 'USUARIO', 'PASANTE']).optional(),
+  estado:          z.enum(['ACTIVO', 'PENDIENTE', 'INACTIVO']).optional(),
+  telefono:        z.string().max(20).optional().nullable(),
+  notif_email:     z.number().int().min(0).max(1).optional(),
+  notif_whatsapp:  z.number().int().min(0).max(1).optional(),
+  id_departamento: z.number().int().positive().optional().nullable(),
 });
 
 const ResetPasswordSchema = z.object({
@@ -41,7 +43,7 @@ export const crearUsuario = async (req: AuthRequest, res: Response) => {
     return res.status(400).json({ error: parsed.error.issues[0].message });
   }
 
-  const { nombre, email, password, rol, estado, telefono, notif_email, notif_whatsapp } = parsed.data;
+  const { nombre, email, password, rol, estado, telefono, notif_email, notif_whatsapp, id_departamento } = parsed.data;
   const estadoFinal = rol === 'PASANTE' && estado === 'ACTIVO' ? 'PENDIENTE' : estado;
 
   let connection;
@@ -60,22 +62,23 @@ export const crearUsuario = async (req: AuthRequest, res: Response) => {
     const hashedPassword = await bcrypt.hash(password, 10);
 
     await connection.execute(
-      `INSERT INTO HD_USUARIOS (NOMBRE, EMAIL, PASSWORD_HASH, ROL, ESTADO, TELEFONO, NOTIF_EMAIL, NOTIF_WHATSAPP)
-       VALUES (:nombre, :email, :password, :rol, :estado, :telefono, :notif_email, :notif_whatsapp)`,
+      `INSERT INTO HD_USUARIOS
+         (NOMBRE, EMAIL, PASSWORD_HASH, ROL, ESTADO, TELEFONO, NOTIF_EMAIL, NOTIF_WHATSAPP, ID_DEPARTAMENTO)
+       VALUES
+         (:nombre, :email, :password, :rol, :estado, :telefono, :notif_email, :notif_whatsapp, :id_departamento)`,
       { nombre, email, password: hashedPassword, rol, estado: estadoFinal,
-        telefono: telefono ?? null, notif_email, notif_whatsapp },
+        telefono: telefono ?? null, notif_email, notif_whatsapp,
+        id_departamento: id_departamento ?? null },
       { autoCommit: true }
     );
 
-    // Enviar credenciales por email y WhatsApp — fire and forget
+    // Enviar credenciales por email — fire and forget
     notificarBienvenida({
       nombre,
       email,
-      passwordPlano: password,   // contraseña en texto plano (antes del hash)
+      passwordPlano: password,
       rol,
-      telefono:       telefono ?? null,
-      notifEmail:     notif_email,
-      notifWhatsapp:  notif_whatsapp,
+      notifEmail: notif_email,
     }).catch(() => {});
 
     return res.status(201).json({
@@ -100,17 +103,20 @@ export const getUsuarios = async (_req: AuthRequest, res: Response) => {
 
     const result = await connection.execute(
       `SELECT
-         ID_USUARIO,
-         NOMBRE,
-         EMAIL,
-         ROL,
-         ESTADO,
-         TELEFONO,
-         NOTIF_EMAIL,
-         NOTIF_WHATSAPP,
-         TO_CHAR(FECHA_CREACION - INTERVAL '5' HOUR, 'YYYY-MM-DD"T"HH24:MI:SS') AS FECHA_CREACION
-       FROM HD_USUARIOS
-       ORDER BY FECHA_CREACION DESC`,
+         u.ID_USUARIO,
+         u.NOMBRE,
+         u.EMAIL,
+         u.ROL,
+         u.ESTADO,
+         u.TELEFONO,
+         u.NOTIF_EMAIL,
+         u.NOTIF_WHATSAPP,
+         u.ID_DEPARTAMENTO,
+         d.NOMBRE AS NOMBRE_DEPARTAMENTO,
+         TO_CHAR(u.FECHA_CREACION - INTERVAL '5' HOUR, 'YYYY-MM-DD"T"HH24:MI:SS') AS FECHA_CREACION
+       FROM HD_USUARIOS u
+       LEFT JOIN HD_DEPARTAMENTOS d ON d.ID_DEPARTAMENTO = u.ID_DEPARTAMENTO
+       ORDER BY u.FECHA_CREACION DESC`,
       {},
       { outFormat: oracledb.OUT_FORMAT_OBJECT }
     );
@@ -163,8 +169,8 @@ export const editarUsuario = async (req: AuthRequest, res: Response) => {
   const parsed = EditUsuarioSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0].message });
 
-  const { nombre, email, rol, estado, telefono, notif_email, notif_whatsapp } = parsed.data;
-  if (!nombre && !email && !rol && !estado && telefono === undefined && notif_email === undefined && notif_whatsapp === undefined) {
+  const { nombre, email, rol, estado, telefono, notif_email, notif_whatsapp, id_departamento } = parsed.data;
+  if (!nombre && !email && !rol && !estado && telefono === undefined && notif_email === undefined && notif_whatsapp === undefined && id_departamento === undefined) {
     return res.status(400).json({ error: 'No se enviaron campos a actualizar' });
   }
 
@@ -202,8 +208,9 @@ export const editarUsuario = async (req: AuthRequest, res: Response) => {
     if (rol)                { setClauses.push('ROL             = :rol');             binds.rol            = rol; }
     if (estado)             { setClauses.push('ESTADO          = :estado');          binds.estado         = estado; }
     if (telefono !== undefined) { setClauses.push('TELEFONO    = :telefono');        binds.telefono       = telefono; }
-    if (notif_email !== undefined)    { setClauses.push('NOTIF_EMAIL    = :ne'); binds.ne = notif_email; }
-    if (notif_whatsapp !== undefined) { setClauses.push('NOTIF_WHATSAPP = :nw'); binds.nw = notif_whatsapp; }
+    if (notif_email !== undefined)      { setClauses.push('NOTIF_EMAIL      = :ne');  binds.ne  = notif_email; }
+    if (notif_whatsapp !== undefined)   { setClauses.push('NOTIF_WHATSAPP   = :nw');  binds.nw  = notif_whatsapp; }
+    if (id_departamento !== undefined)  { setClauses.push('ID_DEPARTAMENTO  = :dep'); binds.dep = id_departamento ?? null; }
 
     await connection.execute(
       `UPDATE HD_USUARIOS SET ${setClauses.join(', ')} WHERE ID_USUARIO = :id`,

@@ -5,10 +5,12 @@ import { useSession } from 'next-auth/react';
 import {
   BarChart2, Loader2, Download, RefreshCw, Printer,
   Ticket, CheckCircle2, Clock, AlertCircle, Award,
-  TrendingUp, Calendar, ShieldAlert,
+  TrendingUp, Calendar, ShieldAlert, FileSpreadsheet,
 } from 'lucide-react';
 import { reportesService } from '@/src/services/reportes.service';
+import { useToast } from '@/src/components/Toast';
 import styles from './page.module.css';
+import * as XLSX from 'xlsx';
 
 // ── Zona horaria ──────────────────────────────────────────────────────────────
 const GYE = 'America/Guayaquil';
@@ -42,13 +44,23 @@ interface ReporteData {
   porCategoria: { CATEGORIA: string; TOTAL: number }[];
   porFecha:     { DIA: string;       TOTAL: number }[];
   porTecnico:   { TECNICO: string;   RESUELTOS: number }[];
+  porDepartamento: { DEPARTAMENTO: string; TOTAL: number }[];
+  sla: {
+    totalCerrados: number;
+    cumplidos: number;
+    porcentajeCumplimiento: number;
+  };
+  tiempoPromedioRespuesta:  number;
+  tiempoPromedioResolucion: number;
+  csat: { promedio: number; total: number; min: number; max: number };
+  tasaResolucion: number;
   generadoEn:   string;
   filtros:      { desde: string | null; hasta: string | null };
 }
 
-type Period = '1d' | '7d' | '30d' | 'month' | 'custom';
+type Period = 'all' | '1d' | '7d' | '30d' | 'month' | 'custom';
 const PERIOD_LABELS: Record<Period, string> = {
-  '1d': 'Hoy', '7d': '7 días', '30d': '30 días', 'month': 'Este mes', 'custom': 'Personalizado',
+  'all': 'Todo', '1d': 'Hoy', '7d': '7 días', '30d': '30 días', 'month': 'Este mes', 'custom': 'Personalizado',
 };
 
 // ── Heatmap color scale ────────────────────────────────────────────────────────
@@ -124,13 +136,25 @@ function pct(val: number, tot: number) {
 }
 function pctStr(val: number, tot: number) { return `${pct(val, tot)}%`; }
 
+function fmtHours(h: number | null | undefined): string {
+  if (h == null || isNaN(Number(h))) return '—';
+  const hrs = Number(h);
+  if (hrs === 0) return '—';
+  if (hrs < 1) return `${Math.round(hrs * 60)}m`;
+  if (hrs < 24) return `${hrs.toFixed(1)}h`;
+  const d = Math.floor(hrs / 24);
+  const r = Math.round(hrs % 24);
+  return r > 0 ? `${d}d ${r}h` : `${d}d`;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 export default function ReportesPage() {
   const { data: session } = useSession();
+  const { toast } = useToast();
   const [reporte, setReporte]       = useState<ReporteData | null>(null);
   const [loading, setLoading]       = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [period, setPeriod]         = useState<Period>('30d');
+  const [period, setPeriod]         = useState<Period>('all');
   const [desde, setDesde]           = useState('');
   const [hasta, setHasta]           = useState('');
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
@@ -139,6 +163,7 @@ export default function ReportesPage() {
   function getRangeDates(p: Period): [string | undefined, string | undefined] {
     const today = todayGYE();
     switch (p) {
+      case 'all':   return [undefined, undefined];
       case '1d':    return [today, today];
       case '7d':    return [daysAgo(7), today];
       case '30d':   return [daysAgo(30), today];
@@ -156,8 +181,8 @@ export default function ReportesPage() {
       setReporte(data);
       setLastUpdated(new Date());
       setTimeout(() => setAnimated(true), 80);
-    } catch (e) {
-      console.error('Error cargando reporte', e);
+    } catch {
+      toast('Error al cargar el reporte. Intenta de nuevo.', 'error');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -165,7 +190,7 @@ export default function ReportesPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [desde, hasta]);
 
-  useEffect(() => { cargar('30d'); }, []);
+  useEffect(() => { cargar('all'); }, []);
 
   const handlePeriod = (p: Period) => {
     setPeriod(p);
@@ -215,6 +240,49 @@ export default function ReportesPage() {
 
   const exportPDF = () => window.print();
 
+  const exportExcel = () => {
+    if (!reporte) return;
+    const wb = XLSX.utils.book_new();
+
+    // Hoja 1: Resumen
+    const ws1 = XLSX.utils.aoa_to_sheet([
+      ['REPORTE HELPDESK', '', `Generado: ${fmtTime(reporte.generadoEn)}`],
+      ['Período', `${reporte.filtros.desde ?? 'Todo'} → ${reporte.filtros.hasta ?? 'Todo'}`],
+      [],
+      ['RESUMEN GENERAL'],
+      ['Total Tickets', reporte.totalTickets],
+      [],
+      ['ESTADO', 'CANTIDAD', '%'],
+      ...reporte.porEstado.map(r => [r.ESTADO, Number(r.TOTAL), `${pct(Number(r.TOTAL), total)}%`]),
+      [],
+      ['PRIORIDAD', 'CANTIDAD', '%'],
+      ...reporte.porPrioridad.map(r => [r.PRIORIDAD, Number(r.TOTAL), `${pct(Number(r.TOTAL), total)}%`]),
+      [],
+      ['CATEGORÍA', 'CANTIDAD'],
+      ...reporte.porCategoria.map(r => [r.CATEGORIA, Number(r.TOTAL)]),
+    ]);
+    ws1['!cols'] = [{ wch: 20 }, { wch: 12 }, { wch: 10 }];
+    XLSX.utils.book_append_sheet(wb, ws1, 'Resumen');
+
+    // Hoja 2: Técnicos
+    const ws2 = XLSX.utils.aoa_to_sheet([
+      ['TÉCNICO', 'TICKETS RESUELTOS'],
+      ...reporte.porTecnico.map(r => [r.TECNICO, Number(r.RESUELTOS)]),
+    ]);
+    ws2['!cols'] = [{ wch: 28 }, { wch: 18 }];
+    XLSX.utils.book_append_sheet(wb, ws2, 'Técnicos');
+
+    // Hoja 3: Actividad diaria
+    const ws3 = XLSX.utils.aoa_to_sheet([
+      ['FECHA', 'TICKETS CREADOS'],
+      ...reporte.porFecha.map(r => [r.DIA, Number(r.TOTAL)]),
+    ]);
+    ws3['!cols'] = [{ wch: 14 }, { wch: 16 }];
+    XLSX.utils.book_append_sheet(wb, ws3, 'Actividad Diaria');
+
+    XLSX.writeFile(wb, `reporte-helpdesk-${todayGYE()}.xlsx`);
+  };
+
   // ── Derivados ─────────────────────────────────────────────────────────────
   const total     = Number(reporte?.totalTickets ?? 0);
   const abiertos  = Number(reporte?.porEstado.find(e => e.ESTADO === 'ABIERTO')?.TOTAL     ?? 0);
@@ -257,11 +325,27 @@ export default function ReportesPage() {
           </button>
           <button className={styles.btnExportCsv} onClick={exportCSV} disabled={!reporte}>
             <Download size={14} />
-            Exportar CSV
+            CSV
+          </button>
+          <button
+            onClick={exportExcel}
+            disabled={!reporte}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              padding: '0.45rem 0.9rem',
+              background: 'rgba(52,211,153,0.1)',
+              border: '1px solid rgba(52,211,153,0.25)',
+              borderRadius: '8px', color: '#34d399',
+              fontSize: '0.78rem', cursor: !reporte ? 'not-allowed' : 'pointer',
+              opacity: !reporte ? 0.5 : 1,
+            }}
+          >
+            <FileSpreadsheet size={14} />
+            Excel
           </button>
           <button className={styles.btnExportPdf} onClick={exportPDF} disabled={!reporte}>
             <Printer size={14} />
-            Imprimir / PDF
+            PDF
           </button>
         </div>
       </div>
@@ -269,7 +353,7 @@ export default function ReportesPage() {
       {/* ── Selector de período ──────────────────────────────────────────────── */}
       <div className={styles.periodBar}>
         <div className={styles.periodPills}>
-          {(['1d', '7d', '30d', 'month', 'custom'] as Period[]).map(p => (
+          {(['all', '1d', '7d', '30d', 'month', 'custom'] as Period[]).map(p => (
             <button
               key={p}
               className={`${styles.periodPill} ${period === p ? styles.periodPillActive : ''}`}
@@ -521,6 +605,105 @@ export default function ReportesPage() {
               </div>
             )}
           </div>
+
+          {/* ── SLA + Tiempos + CSAT ─────────────────────────────────────────── */}
+          <div className={styles.grid2}>
+
+            {/* SLA Cumplimiento */}
+            <div className={`${styles.section} ${styles.ringSection}`}>
+              <span className={styles.sectionTitle}><ShieldAlert size={13} /> Cumplimiento de SLA</span>
+              <div className={styles.ringWrapper}>
+                <DonutRing value={Number(reporte.sla?.porcentajeCumplimiento ?? 0)} animated={animated} />
+                <div className={styles.ringCenter}>
+                  <span className={styles.ringValue}>{Number(reporte.sla?.porcentajeCumplimiento ?? 0).toFixed(1)}%</span>
+                  <span className={styles.ringLabel}>SLA ok</span>
+                </div>
+              </div>
+              <div className={styles.ringLegend}>
+                <div className={styles.legendItem}><span className={`${styles.dot} ${styles.dotGreen}`}/>Cumplidos: {reporte.sla?.cumplidos ?? 0}</div>
+                <div className={styles.legendItem}><span className={`${styles.dot} ${styles.dotRed}`}/>Total cerrados: {reporte.sla?.totalCerrados ?? 0}</div>
+              </div>
+            </div>
+
+            {/* CSAT + Tiempos */}
+            <div className={styles.section}>
+              <span className={styles.sectionTitle}><Award size={13} /> Satisfacción y tiempos</span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginTop: '0.5rem' }}>
+                {[
+                  {
+                    label: 'CSAT promedio',
+                    value: reporte.csat?.total > 0
+                      ? `${Number(reporte.csat.promedio).toFixed(1)} / 5.0`
+                      : '—',
+                    sub: reporte.csat?.total > 0 ? `${reporte.csat.total} respuesta${reporte.csat.total !== 1 ? 's' : ''}` : 'Sin calificaciones',
+                    color: '#fbbf24',
+                  },
+                  {
+                    label: 'Tiempo promedio de respuesta',
+                    value: fmtHours(reporte.tiempoPromedioRespuesta),
+                    sub: 'desde creación hasta primer comentario',
+                    color: '#60a5fa',
+                  },
+                  {
+                    label: 'Tiempo promedio de resolución',
+                    value: fmtHours(reporte.tiempoPromedioResolucion),
+                    sub: 'desde creación hasta resolución',
+                    color: '#34d399',
+                  },
+                ].map(item => (
+                  <div key={item.label} style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    padding: '0.65rem 0.9rem',
+                    background: 'rgba(255,255,255,0.03)',
+                    border: '1px solid rgba(255,255,255,0.06)',
+                    borderRadius: '10px',
+                  }}>
+                    <div>
+                      <p style={{ margin: 0, fontSize: '0.72rem', color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{item.label}</p>
+                      <p style={{ margin: '2px 0 0', fontSize: '0.72rem', color: '#334155' }}>{item.sub}</p>
+                    </div>
+                    <span style={{ fontFamily: 'Syne, sans-serif', fontSize: '1.2rem', fontWeight: 800, color: item.color }}>{item.value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* ── Por departamento ─────────────────────────────────────────────── */}
+          {reporte.porDepartamento && reporte.porDepartamento.length > 0 && (() => {
+            const maxDept = Math.max(0, ...reporte.porDepartamento.map(d => Number(d.TOTAL)));
+            return (
+              <div className={styles.section}>
+                <span className={styles.sectionTitle}><BarChart2 size={13} /> Tickets por departamento</span>
+                <div className={styles.rankingGrid}>
+                  {reporte.porDepartamento.map((item, i) => {
+                    const tot = Number(item.TOTAL);
+                    const barW = maxDept > 0 ? `${Math.round((tot / maxDept) * 100)}%` : '0%';
+                    const color = CATEG_COLORS[i % CATEG_COLORS.length];
+                    return (
+                      <div key={item.DEPARTAMENTO} className={styles.rankCard}>
+                        <div className={styles.rankMedal} style={{ color, fontSize: '0.8rem' }}>#{i + 1}</div>
+                        <div className={styles.rankInfo}>
+                          <span className={styles.rankName}>{item.DEPARTAMENTO}</span>
+                          <div className={styles.rankBarTrack}>
+                            <div className={styles.rankBarFill} style={{
+                              width: animated ? barW : '0%',
+                              background: color,
+                              transition: `width 0.85s ease ${i * 80}ms`,
+                            }} />
+                          </div>
+                        </div>
+                        <div className={styles.rankCount}>
+                          <span style={{ color }}>{tot}</span>
+                          <span className={styles.rankCountLabel}>tickets</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
 
           {/* ── Footer ───────────────────────────────────────────────────────── */}
           <div className={styles.footer}>

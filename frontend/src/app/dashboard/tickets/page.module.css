@@ -184,11 +184,9 @@
 }
 
 .titulo {
-  color: #cbd5e1;
-  max-width: 280px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  color: #60a5fa;
+  max-width: 160px;
+  word-break: break-word;
 }
 
 .fecha {

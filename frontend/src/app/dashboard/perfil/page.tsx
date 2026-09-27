@@ -86,7 +86,7 @@ export default function PerfilPage() {
   const [saving, setSaving] = useState(false);
 
   const [form, setForm] = useState({
-    nombre: '', telefono: '', notif_email: 1, notif_whatsapp: 0,
+    nombre: '', telefono: '', notif_email: 1,
   });
 
   const [pwdForm, setPwdForm] = useState({ actual: '', nuevo: '', confirmar: '' });
@@ -102,7 +102,6 @@ export default function PerfilPage() {
           nombre:         data.NOMBRE        ?? '',
           telefono:       data.TELEFONO      ?? '',
           notif_email:    data.NOTIF_EMAIL   ?? 1,
-          notif_whatsapp: data.NOTIF_WHATSAPP ?? 0,
         });
       } catch {
         toast('Error al cargar el perfil', 'error');
@@ -117,13 +116,12 @@ export default function PerfilPage() {
     setSaving(true);
     try {
       await usuariosService.updateMePerfil({
-        nombre:         form.nombre         || undefined,
-        telefono:       form.telefono       || null,
-        notif_email:    form.notif_email,
-        notif_whatsapp: form.notif_whatsapp,
+        nombre:      form.nombre    || undefined,
+        telefono:    form.telefono  || null,
+        notif_email: form.notif_email,
       });
       toast('Perfil actualizado exitosamente', 'success');
-      setPerfil((p: any) => ({ ...p, NOMBRE: form.nombre, TELEFONO: form.telefono, NOTIF_EMAIL: form.notif_email, NOTIF_WHATSAPP: form.notif_whatsapp }));
+      setPerfil((p: any) => ({ ...p, NOMBRE: form.nombre, TELEFONO: form.telefono, NOTIF_EMAIL: form.notif_email }));
     } catch (err: any) {
       toast(err.response?.data?.error || 'Error al actualizar el perfil', 'error');
     } finally {
@@ -224,39 +222,12 @@ export default function PerfilPage() {
             />
           </Field>
 
-          <div style={{ background: 'rgba(52,211,153,0.05)', border: '1px solid rgba(52,211,153,0.2)', borderRadius: '10px', padding: '0.85rem', marginBottom: '1rem' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#34d399', fontSize: '0.72rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.45rem' }}>
-              <Phone size={12} />
-              Número de WhatsApp
-              <span style={{ color: '#64748b', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>
-                (con código de país)
-              </span>
-            </label>
-            <input
-              type="tel"
-              style={{ ...INPUT, borderColor: form.notif_whatsapp === 1 ? 'rgba(52,211,153,0.35)' : 'rgba(255,255,255,0.1)' }}
-              placeholder="+593 99 912 3456"
-              value={form.telefono}
-              onChange={e => setForm(p => ({ ...p, telefono: e.target.value }))}
-            />
-            {form.notif_whatsapp === 1 && !form.telefono && (
-              <p style={{ color: '#fbbf24', fontSize: '0.72rem', margin: '0.35rem 0 0', display: 'flex', alignItems: 'center', gap: 4 }}>
-                ⚠️ WhatsApp activado — ingresa tu número para recibir mensajes
-              </p>
-            )}
-          </div>
-
           <Field label="Preferencias de notificación">
             <div style={{ display: 'flex', gap: '0.65rem', flexWrap: 'wrap' }}>
               <Toggle
                 active={form.notif_email === 1}
                 onChange={v => setForm(p => ({ ...p, notif_email: v ? 1 : 0 }))}
                 label="📧 Email"
-              />
-              <Toggle
-                active={form.notif_whatsapp === 1}
-                onChange={v => setForm(p => ({ ...p, notif_whatsapp: v ? 1 : 0 }))}
-                label="💬 WhatsApp"
               />
             </div>
           </Field>

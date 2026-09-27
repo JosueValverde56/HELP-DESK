@@ -16,8 +16,13 @@ api.interceptors.request.use(async (config) => {
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401 && typeof window !== 'undefined') {
-      window.location.href = '/login';
+    const status = error.response?.status;
+    const msg    = error.response?.data?.error ?? '';
+    // Solo redirigir al login si el token expiró o es inválido
+    if (typeof window !== 'undefined') {
+      if (status === 401 || (status === 403 && msg.includes('expirado'))) {
+        window.location.href = '/login';
+      }
     }
     return Promise.reject(error);
   }

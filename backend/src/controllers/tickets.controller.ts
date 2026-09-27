@@ -56,6 +56,7 @@ export const getTickets = async (req: AuthRequest, res: Response) => {
   const busqueda = (req.query.q as string | undefined)?.trim();
   const desde    = req.query.desde    as string | undefined;
   const hasta    = req.query.hasta    as string | undefined;
+  const activos  = req.query.activos  === '1';   // excluye RESUELTO y CERRADO
   const offset   = (page - 1) * limit;
 
   const verTodos = ['ADMIN', 'TECNICO', 'PASANTE'].includes(rol);
@@ -67,7 +68,7 @@ export const getTickets = async (req: AuthRequest, res: Response) => {
   if (desde && !ISO_DATE.test(desde)) return res.status(400).json({ error: 'Formato de fecha "desde" inválido' });
   if (hasta && !ISO_DATE.test(hasta)) return res.status(400).json({ error: 'Formato de fecha "hasta" inválido' });
 
-  const cacheKey = `tickets:${verTodos ? 'all' : `u:${id}`}:p${page}:l${limit}:e${estado ?? ''}:pr${prioridad ?? ''}:q${busqueda ?? ''}:d${desde ?? ''}:h${hasta ?? ''}`;
+  const cacheKey = `tickets:${verTodos ? 'all' : `u:${id}`}:p${page}:l${limit}:e${estado ?? ''}:pr${prioridad ?? ''}:q${busqueda ?? ''}:d${desde ?? ''}:h${hasta ?? ''}:a${activos ? '1' : '0'}`;
   const cached = cache.get(cacheKey);
   if (cached) return res.status(200).json(cached);
 
@@ -79,6 +80,7 @@ export const getTickets = async (req: AuthRequest, res: Response) => {
     const conditions: string[] = ['1=1'];
 
     if (!verTodos) { conditions.push('t.ID_USUARIO = :id_user');  filterBinds.id_user   = id; }
+    if (activos)   { conditions.push(`t.ESTADO NOT IN ('RESUELTO','CERRADO')`); }
     if (estado)    { conditions.push('t.ESTADO = :estado');       filterBinds.estado    = estado; }
     if (prioridad) { conditions.push('t.PRIORIDAD = :prioridad'); filterBinds.prioridad = prioridad; }
     if (busqueda)  {
@@ -186,9 +188,16 @@ export const createTicket = async (req: AuthRequest, res: Response) => {
       tecnicoFinal = (autoRow.rows as any[])?.[0]?.ID_USUARIO ?? null;
     }
 
-    // SLA según prioridad: ALTA=4h, MEDIA=24h, BAJA=72h
-    const SLA_HORAS: Record<string, number> = { ALTA: 4, MEDIA: 24, BAJA: 72 };
-    const slaHoras = SLA_HORAS[prioridad] ?? 24;
+    // SLA desde BD (HD_SLA_CONFIG) con fallback hardcoded
+    let slaHoras = prioridad === 'ALTA' ? 4 : prioridad === 'BAJA' ? 72 : 24;
+    try {
+      const slaRow = await connection.execute(
+        `SELECT HORAS_LIMITE FROM HD_SLA_CONFIG WHERE PRIORIDAD = :p`,
+        { p: prioridad }, { outFormat: oracledb.OUT_FORMAT_OBJECT }
+      );
+      const h = (slaRow.rows as any[])?.[0]?.HORAS_LIMITE;
+      if (h) slaHoras = Number(h);
+    } catch { /* usa fallback */ }
 
     const result = await connection.execute(
       `INSERT INTO HD_TICKETS
@@ -272,6 +281,45 @@ export const updateTicketStatus = async (req: AuthRequest, res: Response) => {
   }
 };
 
+// ── PUT /tickets/:id/reabrir ─────────────────────────────────────────────────
+export const reabrirTicket = async (req: AuthRequest, res: Response) => {
+  const idTicket  = Number(req.params.id);
+  const idUsuario = getUserId(req);
+  if (!idUsuario) return res.status(401).json({ error: 'Token mal formado' });
+
+  let connection;
+  try {
+    connection = await oracledb.getConnection();
+
+    const result = await connection.execute(
+      `SELECT ESTADO, ID_USUARIO FROM HD_TICKETS WHERE ID_TICKET = :id`,
+      { id: idTicket },
+      { outFormat: oracledb.OUT_FORMAT_OBJECT }
+    );
+    const row = (result.rows as any[])?.[0];
+    if (!row) return res.status(404).json({ error: 'Ticket no encontrado' });
+    if (row.ESTADO !== 'CERRADO') return res.status(400).json({ error: 'Solo se pueden reabrir tickets cerrados' });
+    if (row.ID_USUARIO !== idUsuario) return res.status(403).json({ error: 'Solo el solicitante puede reabrir el ticket' });
+
+    await connection.execute(
+      `UPDATE HD_TICKETS SET ESTADO = 'REABIERTO' WHERE ID_TICKET = :id`,
+      { id: idTicket },
+      { autoCommit: true }
+    );
+
+    ticketEmitter.emit('ticket.status_changed', { idTicket, idUsuario, estadoAnterior: 'CERRADO', estadoNuevo: 'REABIERTO' });
+    cache.invalidate('tickets:');
+
+    return res.status(200).json({ mensaje: 'Ticket reabierto exitosamente' });
+
+  } catch (error: any) {
+    console.error('Error al reabrir ticket:', error.message);
+    return res.status(500).json({ error: 'Error al reabrir el ticket' });
+  } finally {
+    if (connection) await connection.close();
+  }
+};
+
 // ── PUT /tickets/:id/asignar ──────────────────────────────────────────────────
 export const asignarTicket = async (req: AuthRequest, res: Response) => {
   const parsed = AsignarSchema.safeParse(req.body);
@@ -313,6 +361,61 @@ export const asignarTicket = async (req: AuthRequest, res: Response) => {
   }
 };
 
+// ── PUT /tickets/:id/sla — Actualizar fecha límite SLA (ADMIN/TECNICO) ────────
+export const updateSLA = async (req: AuthRequest, res: Response) => {
+  const idTicket = Number(req.params.id);
+  if (!idTicket || isNaN(idTicket)) return res.status(400).json({ error: 'ID inválido' });
+
+  const { fecha_sla } = req.body;
+  if (!fecha_sla || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(fecha_sla)) {
+    return res.status(400).json({ error: 'Formato inválido. Use YYYY-MM-DDTHH:MM' });
+  }
+
+  const idUsuario = getUserId(req);
+  if (!idUsuario) return res.status(401).json({ error: 'Sesión inválida' });
+
+  let connection;
+  try {
+    connection = await oracledb.getConnection();
+
+    const existing = await connection.execute(
+      `SELECT ID_TICKET FROM HD_TICKETS WHERE ID_TICKET = :id AND ESTADO NOT IN ('RESUELTO','CERRADO')`,
+      { id: idTicket },
+      { outFormat: oracledb.OUT_FORMAT_OBJECT }
+    );
+    if ((existing.rows as any[]).length === 0) {
+      return res.status(404).json({ error: 'Ticket no encontrado o ya cerrado' });
+    }
+
+    // fecha_sla viene en hora Ecuador (UTC-5) → sumar 5h para guardar en UTC en Oracle
+    const fechaOracle = fecha_sla.replace('T', ' ') + ':00';
+
+    await connection.execute(
+      `UPDATE HD_TICKETS
+          SET FECHA_SLA          = TO_TIMESTAMP(:fecha, 'YYYY-MM-DD HH24:MI:SS') + INTERVAL '5' HOUR,
+              SLA_ALERTA_ENVIADA = 0
+        WHERE ID_TICKET = :id`,
+      { fecha: fechaOracle, id: idTicket },
+      { autoCommit: true }
+    );
+
+    ticketEmitter.emit('ticket.status_changed', {
+      idTicket, idUsuario,
+      estadoAnterior: 'SLA_ANTERIOR',
+      estadoNuevo:    `SLA_NUEVO:${fecha_sla}`,
+    });
+    cache.invalidate('tickets:');
+
+    return res.status(200).json({ mensaje: 'SLA actualizado correctamente' });
+
+  } catch (error: any) {
+    console.error('Error al actualizar SLA:', error.message);
+    return res.status(500).json({ error: 'Error al actualizar el SLA' });
+  } finally {
+    if (connection) await connection.close();
+  }
+};
+
 // ── POST /tickets/comentario ──────────────────────────────────────────────────
 export const addComment = async (req: AuthRequest, res: Response) => {
   const parsed = AddCommentSchema.safeParse(req.body);
@@ -348,19 +451,21 @@ export const addComment = async (req: AuthRequest, res: Response) => {
     const estadoActual: string   = ticketRow?.ESTADO      ?? 'ABIERTO';
     const duenioTicket: number   = ticketRow?.ID_USUARIO  ?? 0;
 
+    // Determinar si hay cambio de estado — guardamos para emitir DESPUÉS del commit
+    let estadoCambiado: { anterior: string; nuevo: string } | null = null;
+
     // Auto-reabierto: si el dueño comenta en un ticket RESUELTO, lo reabre
     if (estadoActual === 'RESUELTO' && id_usuario === duenioTicket && !nuevo_estado) {
       await connection.execute(
         `UPDATE HD_TICKETS SET ESTADO = 'REABIERTO' WHERE ID_TICKET = :id`,
         { id: id_ticket }
       );
-      ticketEmitter.emit('ticket.status_changed', {
-        idTicket: id_ticket, idUsuario: id_usuario,
-        estadoAnterior: 'RESUELTO', estadoNuevo: 'REABIERTO',
-      });
+      estadoCambiado = { anterior: 'RESUELTO', nuevo: 'REABIERTO' };
     } else if (nuevo_estado) {
       if (rol === 'USUARIO' || rol === 'PASANTE') {
         await connection.rollback();
+        await connection.close();
+        connection = undefined as any;
         return res.status(403).json({ error: 'No tienes permiso para cambiar el estado' });
       }
 
@@ -368,15 +473,21 @@ export const addComment = async (req: AuthRequest, res: Response) => {
         `UPDATE HD_TICKETS SET ESTADO = :estado WHERE ID_TICKET = :id`,
         { estado: nuevo_estado, id: id_ticket }
       );
-
-      ticketEmitter.emit('ticket.status_changed', {
-        idTicket: id_ticket, idUsuario: id_usuario, estadoAnterior: estadoActual, estadoNuevo: nuevo_estado,
-      });
+      estadoCambiado = { anterior: estadoActual, nuevo: nuevo_estado };
     }
 
+    // Commit ANTES de emitir eventos — garantiza que getTicketInfo lea datos consistentes
     await connection.commit();
-    ticketEmitter.emit('ticket.commented', { idTicket: id_ticket, idUsuario: id_usuario, detalle: texto });
     cache.invalidate('tickets:');
+
+    // Emitir eventos después del commit
+    if (estadoCambiado) {
+      ticketEmitter.emit('ticket.status_changed', {
+        idTicket: id_ticket, idUsuario: id_usuario,
+        estadoAnterior: estadoCambiado.anterior, estadoNuevo: estadoCambiado.nuevo,
+      });
+    }
+    ticketEmitter.emit('ticket.commented', { idTicket: id_ticket, idUsuario: id_usuario, detalle: texto });
 
     return res.status(201).json({ mensaje: 'Comentario añadido correctamente' });
 
@@ -425,6 +536,36 @@ export const getCommentsByTicket = async (req: AuthRequest, res: Response) => {
     return res.status(500).json({ error: 'Error al obtener los comentarios' });
   } finally {
     if (connection) await connection.close();
+  }
+};
+
+// ── GET /tickets/trend ────────────────────────────────────────────────────────
+export const getTicketTrend = async (req: AuthRequest, res: Response) => {
+  if (!req.user) return res.status(401).json({ error: 'No autenticado' });
+  const cacheKey = 'tickets:trend';
+  const cached = cache.get(cacheKey);
+  if (cached) return res.status(200).json(cached);
+  let conn;
+  try {
+    conn = await oracledb.getConnection();
+    const result = await conn.execute(
+      `SELECT TO_CHAR(FECHA_CREACION - INTERVAL '5' HOUR,'YYYY-MM-DD') AS DIA,
+              COUNT(*) AS TOTAL
+       FROM HD_TICKETS
+       WHERE FECHA_CREACION >= SYSDATE - 90
+       GROUP BY TO_CHAR(FECHA_CREACION - INTERVAL '5' HOUR,'YYYY-MM-DD')
+       ORDER BY DIA ASC`,
+      {},
+      { outFormat: oracledb.OUT_FORMAT_OBJECT }
+    );
+    const rows = result.rows ?? [];
+    cache.set(cacheKey, rows, 60);
+    return res.json(rows);
+  } catch (err: any) {
+    console.error('Error en getTicketTrend:', err.message);
+    return res.status(500).json({ error: err.message });
+  } finally {
+    if (conn) await conn.close();
   }
 };
 
